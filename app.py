@@ -187,9 +187,40 @@ if st.button("🔎 MULAI SCAN SAHAM", type="primary"):
         if results:
             df = pd.DataFrame(results)
 
-            st.subheader("📊 Hasil Pemindaian")
+if not df.empty:
+    if "Sinyal" in df.columns:
+        urutan_sinyal = {
+            "BREAKOUT POTENSIAL": 3,
+            "PANTAU": 2,
+            "BELUM ADA SINYAL": 1
+        }
 
-            st.dataframe(
+        df["Prioritas"] = (
+            df["Sinyal"].map(urutan_sinyal).fillna(0)
+        )
+
+        df = df.sort_values(
+            by="Prioritas",
+            ascending=False
+        )
+
+    st.subheader("🏆 TOP 10 Saham Potensial")
+    st.dataframe(
+        df.head(10),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.subheader("📊 Hasil Pemindaian Semua Saham")
+    st.dataframe(
+        df.drop(columns=["Prioritas"], errors="ignore"),
+        use_container_width=True,
+        hide_index=True
+    )
+else:
+    st.warning("Belum ada data saham yang berhasil dipindai.")
+            df = pd.DataFrame(results
+          
                 df.sort_values(
                     by=["Sinyal", "Volume x"],
                     ascending=[True, False]
