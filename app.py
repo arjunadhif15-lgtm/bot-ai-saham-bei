@@ -1,8 +1,8 @@
-==========================================
+# ==========================================
 
-AI ANALISIS BERDASARKAN DATA OTOMATIS
+# AI ANALISIS BERDASARKAN DATA OTOMATIS
 
-==========================================
+# ==========================================
 
 st.divider()
 st.header("🤖 AI Analisis Data Saham")
@@ -1039,11 +1039,11 @@ if st.button("AMBIL DATA SAHAM", key="ambil_data_otomatis"):
             )
             st.caption(str(e))
 
-==========================================
+# ==========================================
 
-AI ANALISIS BERDASARKAN DATA OTOMATIS
+# AI ANALISIS BERDASARKAN DATA OTOMATIS
 
-==========================================
+# ==========================================
 
 st.divider()
 st.header("🤖 AI Analisis Data Saham")
