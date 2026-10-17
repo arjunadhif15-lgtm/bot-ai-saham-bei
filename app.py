@@ -1,7 +1,3 @@
-Nama file: "app.py"
-
-Salin seluruh kode pada blok berikut ke file "app.py" di GitHub.
-
 import os
 import time
 import math
