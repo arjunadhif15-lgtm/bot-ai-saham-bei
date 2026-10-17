@@ -752,3 +752,155 @@ if st.button("🔍 ANALISIS DENGAN AI", key="tombol_ai"):
             "kuota, koneksi, dan nama model Gemini."
         )
         st.caption(str(e))
+
+# ==========================================
+# DATA SAHAM OTOMATIS
+# ==========================================
+
+st.divider()
+st.header("📈 Data Saham Otomatis")
+
+import yfinance as yf
+import pandas as pd
+import numpy as np
+
+kode_otomatis = st.text_input(
+    "Masukkan kode saham BEI",
+    value="BBRI",
+    key="kode_otomatis"
+).upper().strip()
+
+if st.button("AMBIL DATA SAHAM", key="ambil_data_otomatis"):
+
+    if not kode_otomatis:
+        st.warning("Masukkan kode saham terlebih dahulu.")
+
+    else:
+        try:
+            with st.spinner("Mengambil data saham..."):
+
+                ticker = yf.Ticker(
+                    kode_otomatis + ".JK"
+                )
+
+                df = ticker.history(period="6mo")
+
+            if df.empty:
+                st.error(
+                    "Data tidak ditemukan. "
+                    "Periksa kode saham atau koneksi."
+                )
+
+            else:
+                df = df.dropna(
+                    subset=["Close"]
+                ).copy()
+
+                df["EMA9"] = df["Close"].ewm(
+                    span=9,
+                    adjust=False
+                ).mean()
+
+                df["EMA21"] = df["Close"].ewm(
+                    span=21,
+                    adjust=False
+                ).mean()
+
+                delta = df["Close"].diff()
+
+                gain = delta.clip(lower=0)
+                loss = -delta.clip(upper=0)
+
+                avg_gain = gain.ewm(
+                    alpha=1/14,
+                    min_periods=14,
+                    adjust=False
+                ).mean()
+
+                avg_loss = loss.ewm(
+                    alpha=1/14,
+                    min_periods=14,
+                    adjust=False
+                ).mean()
+
+                rs = avg_gain / avg_loss.replace(
+                    0, np.nan
+                )
+
+                df["RSI14"] = 100 - (
+                    100 / (1 + rs)
+                )
+
+                terakhir = df.iloc[-1]
+
+                st.subheader(
+                    "Hasil: " + kode_otomatis
+                )
+
+                kolom1, kolom2 = st.columns(2)
+
+                kolom1.metric(
+                    "Harga penutupan",
+                    f"Rp {terakhir['Close']:,.0f}"
+                )
+
+                kolom2.metric(
+                    "RSI 14",
+                    (
+                        f"{terakhir['RSI14']:.2f}"
+                        if pd.notna(terakhir["RSI14"])
+                        else "Belum tersedia"
+                    )
+                )
+
+                kolom1.metric(
+                    "EMA 9",
+                    f"Rp {terakhir['EMA9']:,.0f}"
+                )
+
+                kolom2.metric(
+                    "EMA 21",
+                    f"Rp {terakhir['EMA21']:,.0f}"
+                )
+
+                if terakhir["EMA9"] > terakhir["EMA21"]:
+                    st.success(
+                        "EMA 9 di atas EMA 21: "
+                        "indikasi tren jangka pendek positif."
+                    )
+                else:
+                    st.warning(
+                        "EMA 9 di bawah atau sama dengan EMA 21: "
+                        "momentum perlu dicermati."
+                    )
+
+                st.subheader("Riwayat harga terbaru")
+
+                st.dataframe(
+                    df[
+                        [
+                            "Close",
+                            "Volume",
+                            "EMA9",
+                            "EMA21",
+                            "RSI14"
+                        ]
+                    ].tail(20).round(2),
+                    use_container_width=True
+                )
+
+                st.caption(
+                    "Sumber: Yahoo Finance. "
+                    "Data dapat terlambat atau tidak lengkap. "
+                    "Harga penutupan terakhir bukan selalu "
+                    "harga real-time."
+                )
+
+        except Exception as e:
+            st.error(
+                "Gagal mengambil data saham. "
+                "Silakan coba lagi."
+            )
+            st.caption(str(e))
+
+
