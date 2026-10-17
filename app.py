@@ -666,3 +666,89 @@ st.caption(
     "BOT AI SAHAM BEI 2.0 | Data harian Yahoo Finance. "
     "Bukan data real-time dan belum mengeksekusi order otomatis."
 )
+
+# ==============================
+# AI ANALIS SAHAM GEMINI
+# ==============================
+
+st.divider()
+st.header("🤖 AI Analyst Saham BEI")
+
+st.write(
+    "Gunakan AI untuk membantu menganalisis "
+    "saham Indonesia berdasarkan informasi yang tersedia."
+)
+
+ticker_ai = st.text_input(
+    "Kode saham",
+    value="BBRI",
+    key="ticker_ai"
+).upper().strip()
+
+data_saham = st.text_area(
+    "Data saham (opsional)",
+    placeholder=(
+        "Contoh: harga sekarang 3500, "
+        "EMA9 di atas EMA21, RSI 60, "
+        "volume meningkat, laba bersih naik."
+    ),
+    key="data_saham_ai"
+)
+
+pertanyaan_ai = st.text_area(
+    "Apa yang ingin dianalisis?",
+    value=(
+        "Analisis tren, momentum, risiko, "
+        "area beli, target harga, dan stop loss. "
+        "Jelaskan skenario bullish dan bearish."
+    ),
+    key="pertanyaan_ai"
+)
+
+if st.button("🔍 ANALISIS DENGAN AI", key="tombol_ai"):
+
+    try:
+        from google import genai
+
+        api_key = st.secrets["GEMINI_API_KEY"]
+        client = genai.Client(api_key=api_key)
+
+        prompt = f"""
+        Kamu adalah asisten analisis saham Bursa Efek Indonesia.
+
+        Kode saham: {ticker_ai}
+        Data yang diberikan pengguna: {data_saham}
+        Permintaan analisis: {pertanyaan_ai}
+
+        Buat analisis dalam bahasa Indonesia dengan bagian:
+        1. Ringkasan kondisi saham.
+        2. Analisis teknikal jika datanya tersedia.
+        3. Analisis fundamental jika datanya tersedia.
+        4. Skenario bullish dan bearish.
+        5. Area beli dan target harga hanya jika data cukup.
+        6. Stop loss dan manajemen risiko.
+        7. Kesimpulan dan risiko utama.
+
+        Jangan mengarang harga terkini, laporan keuangan,
+        transaksi broker, atau data bandar.
+        Jika data tidak tersedia, katakan dengan jujur.
+        Bedakan fakta, asumsi, dan perkiraan.
+        Analisis bukan jaminan keuntungan.
+        """
+
+        with st.spinner("AI sedang menganalisis saham..."):
+
+            response = client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=prompt
+            )
+
+        st.subheader("📊 Hasil Analisis AI")
+        st.markdown(response.text)
+
+    except Exception as e:
+        st.error(
+            "Analisis AI gagal. Periksa API key, "
+            "kuota, koneksi, dan nama model Gemini."
+        )
+        st.caption(str(e))
