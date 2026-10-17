@@ -1,4 +1,140 @@
-import streamlit as st
+==========================================
+
+AI ANALISIS BERDASARKAN DATA OTOMATIS
+
+==========================================
+
+st.divider()
+st.header("🤖 AI Analisis Data Saham")
+
+kode_ai_otomatis = st.text_input(
+"Kode saham untuk dianalisis AI",
+value="BBRI",
+key="kode_ai_otomatis"
+).upper().strip()
+
+if st.button(
+"ANALISIS DATA DENGAN AI",
+key="analisis_data_ai"
+):
+try:
+from google import genai
+
+    api_key = st.secrets["GEMINI_API_KEY"]
+    client = genai.Client(api_key=api_key)
+
+    with st.spinner("Mengambil data dan menganalisis saham..."):
+        ticker_ai_otomatis = yf.Ticker(
+            kode_ai_otomatis + ".JK"
+        )
+
+        data_ai_otomatis = ticker_ai_otomatis.history(
+            period="6mo"
+        )
+
+        if data_ai_otomatis.empty:
+            st.error("Data saham tidak ditemukan.")
+
+        else:
+            harga = data_ai_otomatis["Close"]
+            volume = data_ai_otomatis["Volume"]
+
+            ema9 = harga.ewm(
+                span=9,
+                adjust=False
+            ).mean()
+
+            ema21 = harga.ewm(
+                span=21,
+                adjust=False
+            ).mean()
+
+            perubahan_1_hari = (
+                (harga.iloc[-1] / harga.iloc[-2] - 1) * 100
+                if len(harga) >= 2 else 0
+            )
+
+            perubahan_1_bulan = (
+                (harga.iloc[-1] / harga.iloc[-22] - 1) * 100
+                if len(harga) >= 22 else None
+            )
+
+            volume_rata = volume.tail(20).mean()
+
+            volume_terakhir = volume.iloc[-1]
+
+            rasio_volume = (
+                volume_terakhir / volume_rata
+                if volume_rata and volume_rata > 0
+                else None
+            )
+
+            ringkasan_data = {
+                "Kode saham": kode_ai_otomatis,
+                "Tanggal data terakhir": str(
+                    data_ai_otomatis.index[-1].date()
+                ),
+                "Harga penutupan terakhir": round(
+                    float(harga.iloc[-1]), 2
+                ),
+                "Perubahan harian (%)": round(
+                    float(perubahan_1_hari), 2
+                ),
+                "Perubahan sekitar 1 bulan (%)": (
+                    round(float(perubahan_1_bulan), 2)
+                    if perubahan_1_bulan is not None
+                    else "Data belum cukup"
+                ),
+                "EMA 9": round(float(ema9.iloc[-1]), 2),
+                "EMA 21": round(float(ema21.iloc[-1]), 2),
+                "Volume terakhir": int(volume_terakhir),
+                "Rasio volume terhadap rata-rata 20 hari": (
+                    round(float(rasio_volume), 2)
+                    if rasio_volume is not None
+                    else "Tidak tersedia"
+                )
+            }
+
+            prompt_ai_otomatis = f"""
+            Kamu adalah analis saham Bursa Efek Indonesia.
+
+            Analisis saham berdasarkan DATA AKTUAL yang
+            berhasil diambil berikut ini:
+
+            {ringkasan_data}
+
+            Buat analisis dalam bahasa Indonesia dengan bagian:
+            1. Ringkasan kondisi saham.
+            2. Tren berdasarkan EMA 9 dan EMA 21.
+            3. Momentum berdasarkan perubahan harga.
+            4. Interpretasi volume dan kemungkinan akumulasi
+               atau distribusi, dengan catatan bahwa volume
+               tidak membuktikan transaksi bandar.
+            5. Skenario bullish dan bearish.
+            6. Area beli, target harga, dan stop loss hanya
+               jika data cukup; jelaskan dasar perkiraannya.
+            7. Risiko utama dan kesimpulan.
+
+            Jangan mengarang data, harga real-time,
+            transaksi broker, atau laporan fundamental.
+            Bedakan fakta dari perkiraan.
+            Analisis bukan jaminan keuntungan.
+            """
+
+            respons_ai_otomatis = client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=prompt_ai_otomatis
+            )
+
+            st.subheader("📊 Data yang dianalisis")
+            st.json(ringkasan_data)
+
+            st.subheader("🤖 Hasil analisis AI")
+            st.markdown(respons_ai_otomatis.text)
+
+except Exception as e:
+    st.error("Analisis AI gagal dijalankan.")
+    st.caption(str(e))import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
@@ -902,5 +1038,143 @@ if st.button("AMBIL DATA SAHAM", key="ambil_data_otomatis"):
                 "Silakan coba lagi."
             )
             st.caption(str(e))
+
+==========================================
+
+AI ANALISIS BERDASARKAN DATA OTOMATIS
+
+==========================================
+
+st.divider()
+st.header("🤖 AI Analisis Data Saham")
+
+kode_ai_otomatis = st.text_input(
+"Kode saham untuk dianalisis AI",
+value="BBRI",
+key="kode_ai_otomatis"
+).upper().strip()
+
+if st.button(
+"ANALISIS DATA DENGAN AI",
+key="analisis_data_ai"
+):
+try:
+from google import genai
+
+    api_key = st.secrets["GEMINI_API_KEY"]
+    client = genai.Client(api_key=api_key)
+
+    with st.spinner("Mengambil data dan menganalisis saham..."):
+        ticker_ai_otomatis = yf.Ticker(
+            kode_ai_otomatis + ".JK"
+        )
+
+        data_ai_otomatis = ticker_ai_otomatis.history(
+            period="6mo"
+        )
+
+        if data_ai_otomatis.empty:
+            st.error("Data saham tidak ditemukan.")
+
+        else:
+            harga = data_ai_otomatis["Close"]
+            volume = data_ai_otomatis["Volume"]
+
+            ema9 = harga.ewm(
+                span=9,
+                adjust=False
+            ).mean()
+
+            ema21 = harga.ewm(
+                span=21,
+                adjust=False
+            ).mean()
+
+            perubahan_1_hari = (
+                (harga.iloc[-1] / harga.iloc[-2] - 1) * 100
+                if len(harga) >= 2 else 0
+            )
+
+            perubahan_1_bulan = (
+                (harga.iloc[-1] / harga.iloc[-22] - 1) * 100
+                if len(harga) >= 22 else None
+            )
+
+            volume_rata = volume.tail(20).mean()
+
+            volume_terakhir = volume.iloc[-1]
+
+            rasio_volume = (
+                volume_terakhir / volume_rata
+                if volume_rata and volume_rata > 0
+                else None
+            )
+
+            ringkasan_data = {
+                "Kode saham": kode_ai_otomatis,
+                "Tanggal data terakhir": str(
+                    data_ai_otomatis.index[-1].date()
+                ),
+                "Harga penutupan terakhir": round(
+                    float(harga.iloc[-1]), 2
+                ),
+                "Perubahan harian (%)": round(
+                    float(perubahan_1_hari), 2
+                ),
+                "Perubahan sekitar 1 bulan (%)": (
+                    round(float(perubahan_1_bulan), 2)
+                    if perubahan_1_bulan is not None
+                    else "Data belum cukup"
+                ),
+                "EMA 9": round(float(ema9.iloc[-1]), 2),
+                "EMA 21": round(float(ema21.iloc[-1]), 2),
+                "Volume terakhir": int(volume_terakhir),
+                "Rasio volume terhadap rata-rata 20 hari": (
+                    round(float(rasio_volume), 2)
+                    if rasio_volume is not None
+                    else "Tidak tersedia"
+                )
+            }
+
+            prompt_ai_otomatis = f"""
+            Kamu adalah analis saham Bursa Efek Indonesia.
+
+            Analisis saham berdasarkan DATA AKTUAL yang
+            berhasil diambil berikut ini:
+
+            {ringkasan_data}
+
+            Buat analisis dalam bahasa Indonesia dengan bagian:
+            1. Ringkasan kondisi saham.
+            2. Tren berdasarkan EMA 9 dan EMA 21.
+            3. Momentum berdasarkan perubahan harga.
+            4. Interpretasi volume dan kemungkinan akumulasi
+               atau distribusi, dengan catatan bahwa volume
+               tidak membuktikan transaksi bandar.
+            5. Skenario bullish dan bearish.
+            6. Area beli, target harga, dan stop loss hanya
+               jika data cukup; jelaskan dasar perkiraannya.
+            7. Risiko utama dan kesimpulan.
+
+            Jangan mengarang data, harga real-time,
+            transaksi broker, atau laporan fundamental.
+            Bedakan fakta dari perkiraan.
+            Analisis bukan jaminan keuntungan.
+            """
+
+            respons_ai_otomatis = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt_ai_otomatis
+            )
+
+            st.subheader("📊 Data yang dianalisis")
+            st.json(ringkasan_data)
+
+            st.subheader("🤖 Hasil analisis AI")
+            st.markdown(respons_ai_otomatis.text)
+
+except Exception as e:
+    st.error("Analisis AI gagal dijalankan.")
+    st.caption(str(e))
 
 
