@@ -886,10 +886,33 @@ if st.button(
                     Analisis bukan jaminan keuntungan.
                     """
 
-                    respons_ai = client.models.generate_content(
-                        model="gemini-3.8-flash",
-                        contents=prompt_ai
-                    )
+                    import time
+
+respons_ai = None
+error_ai = None
+
+for percobaan in range(3):
+    try:
+        respons_ai = client.models.generate_content(
+            model="gemini-3.8-flash",
+            contents=prompt_ai
+        )
+        break
+
+    except Exception as e:
+        error_ai = e
+        if percobaan < 2:
+            time.sleep(3 * (percobaan + 1))
+        else:
+            st.error(
+                "AI masih gagal setelah 3 percobaan. "
+                "Server Gemini mungkin sedang sibuk."
+            )
+            st.caption(str(error_ai))
+
+if respons_ai is not None:
+    st.markdown(respons_ai.text)
+                  
 
                     st.session_state["ringkasan_ai"] = ringkasan_ai
                     st.session_state["hasil_ai"] = respons_ai.text or ""
