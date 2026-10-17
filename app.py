@@ -1,105 +1,237 @@
 import time
-from datetime import datetime
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-
-# ==========================================
-# KONFIGURASI APLIKASI
-# ==========================================
+# =========================================================
+# BOT AI SAHAM BEI 4.0
+# =========================================================
 
 st.set_page_config(
-    page_title="BOT AI SAHAM BEI",
+    page_title="BOT AI SAHAM BEI 4.0",
     page_icon="📈",
     layout="wide"
 )
 
-st.title("📈 BOT AI SAHAM BEI 3.1")
-
+st.title("📈 BOT AI SAHAM BEI 4.0")
 st.caption(
-    "Scanner saham BEI dengan indikator teknikal, "
-    "analisis harga dan volume, serta bantuan Gemini AI."
+    "Scanner saham BEI dengan analisis teknikal, "
+    "penyaringan likuiditas, dan bantuan Gemini AI."
 )
 
+# =========================================================
+# DAFTAR SAHAM CADANGAN
+# Bukan daftar lengkap seluruh saham BEI.
+# =========================================================
+
 DEFAULT_TICKERS = [
-    "BBCA", "BBRI", "BMRI", "BBNI", "BBTN",
-    "ANTM", "MDKA", "BRMS", "PTBA", "ADRO",
-    "ITMG", "INCO", "UNTR", "ASII", "TLKM",
-    "GOTO", "BRPT", "BREN", "DEWA", "BUKA",
-    "WOOD", "KPIG", "BBYB", "COCO", "FORE",
-    "NCKL", "EMTK", "AVIA", "VKTR", "IOTF"
+    "AADI", "ACES", "ADHI", "ADMR", "ADRO",
+    "AGRO", "AKRA", "AMMN", "AMRT", "ANTM",
+    "ARTO", "ASII", "ASSA", "AUTO", "AVIA",
+    "BABP", "BANK", "BBCA", "BBNI", "BBRI",
+    "BBTN", "BBYB", "BFIN", "BJBR", "BJTM",
+    "BKSL", "BMRI", "BMTR", "BNGA", "BRIS",
+    "BRMS", "BRPT", "BSDE", "BUKA", "BUMI",
+    "BULL", "BWPT", "CDIA", "CLEO", "CMRY",
+    "CNMA", "COCO", "CPIN", "CTRA", "CUAN",
+    "DEWA", "DOID", "DSNG", "DSSA", "EMTK",
+    "ENRG", "ERAA", "ESSA", "EXCL", "GGRM",
+    "GJTL", "GOTO", "HEAL", "HMSP", "HRUM",
+    "ICBP", "INCO", "INDF", "INDY", "INKP",
+    "INTP", "ISAT", "ITMG", "JPFA", "JSMR",
+    "KIJA", "KLBF", "KPIG", "LPPF", "LSIP",
+    "MBMA", "MDIY", "MDKA", "MEDC", "MIKA",
+    "MIDI", "MNCN", "MPMX", "MTEL", "MYOR",
+    "NCKL", "NICL", "NISP", "PANI", "PGAS",
+    "PGEO", "PNBN", "PNLF", "PTBA", "PTPP",
+    "PWON", "RAJA", "SCMA", "SIDO", "SMGR",
+    "SMRA", "SRTG", "SSIA", "TAPG", "TBIG",
+    "TINS", "TKIM", "TLKM", "TOWR", "TPIA",
+    "TUGU", "ULTJ", "UNTR", "UNVR", "VKTR",
+    "WIFI", "WOOD", "WSBP", "WSKT", "WTON",
+    "FORE", "IOTF", "BRRC", "VIVA", "MDRN",
+    "NTBK", "WEGE", "OKAS", "TAYS", "AGRS",
+    "IBOS", "BVIC", "TRIN", "MINE", "NANO"
 ]
 
 
-# ==========================================
-# FUNGSI MENGAMBIL DATA SAHAM
-# ==========================================
+# =========================================================
+# FUNGSI NORMALISASI KODE SAHAM
+# =========================================================
+
+def normalisasi_kode(value):
+    kode = str(value).strip().upper()
+
+    if kode.endswith(".JK"):
+        kode = kode[:-3]
+
+    if kode in {
+        "",
+        "NAN",
+        "NONE",
+        "KODE",
+        "TICKER",
+        "SYMBOL",
+        "KODE SAHAM"
+    }:
+        return None
+
+    if 1 <= len(kode) <= 6 and kode.isalnum():
+        return kode
+
+    return None
+
+
+# =========================================================
+# MEMBACA CSV DAFTAR SAHAM
+# =========================================================
+
+def baca_csv_kode(file):
+    try:
+        tabel = pd.read_csv(file)
+
+        if tabel.empty:
+            return []
+
+        kolom_kode = None
+
+        pilihan_kolom = [
+            "kode",
+            "kode saham",
+            "ticker",
+            "symbol",
+            "code",
+            "stock"
+        ]
+
+        for kolom in tabel.columns:
+            if str(kolom).strip().lower() in pilihan_kolom:
+                kolom_kode = kolom
+                break
+
+        if kolom_kode is None:
+            kolom_kode = tabel.columns[0]
+
+        hasil = []
+
+        for nilai in tabel[kolom_kode]:
+            kode = normalisasi_kode(nilai)
+
+            if kode:
+                hasil.append(kode)
+
+        return hasil
+
+    except Exception:
+        return []
+
+
+# =========================================================
+# MENGAMBIL DATA HARGA DARI YAHOO FINANCE
+# =========================================================
 
 @st.cache_data(ttl=300, show_spinner=False)
-def ambil_data(ticker):
+def ambil_data(kode):
+
+    simbol = (
+        kode if kode.endswith(".JK")
+        else f"{kode}.JK"
+    )
+
     try:
         df = yf.download(
-            ticker,
+            simbol,
             period="6mo",
             interval="1d",
             auto_adjust=True,
             progress=False,
-            threads=False
+            threads=False,
+            timeout=20
         )
 
         if df is None or df.empty:
-            return None
+            return pd.DataFrame()
 
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
-        kolom = ["Open", "High", "Low", "Close", "Volume"]
+        kolom_wajib = [
+            "Open",
+            "High",
+            "Low",
+            "Close",
+            "Volume"
+        ]
 
-        if not all(k in df.columns for k in kolom):
-            return None
+        if not all(
+            kolom in df.columns
+            for kolom in kolom_wajib
+        ):
+            return pd.DataFrame()
 
-        df = df[kolom].copy()
+        df = df[kolom_wajib].copy()
 
-        for k in kolom:
-            df[k] = pd.to_numeric(df[k], errors="coerce")
+        for kolom in kolom_wajib:
+            df[kolom] = pd.to_numeric(
+                df[kolom],
+                errors="coerce"
+            )
 
-        df = df.dropna()
+        df = df.dropna(
+            subset=[
+                "High",
+                "Low",
+                "Close",
+                "Volume"
+            ]
+        )
+
+        df = df[
+            (df["Close"] > 0)
+            & (df["Volume"] >= 0)
+        ]
 
         if len(df) < 30:
-            return None
+            return pd.DataFrame()
 
         return df
 
     except Exception:
-        return None
+        return pd.DataFrame()
 
 
-# ==========================================
-# INDIKATOR TEKNIKAL
-# ==========================================
+# =========================================================
+# MENGHITUNG INDIKATOR TEKNIKAL
+# =========================================================
 
 def hitung_indikator(df):
-    df = df.copy()
 
-    close = df["Close"]
-    high = df["High"]
-    low = df["Low"]
+    d = df.copy()
 
-    df["EMA9"] = close.ewm(
-        span=9, adjust=False
+    close = d["Close"]
+    high = d["High"]
+    low = d["Low"]
+    volume = d["Volume"]
+
+    # EMA
+    d["EMA9"] = close.ewm(
+        span=9,
+        adjust=False
     ).mean()
 
-    df["EMA21"] = close.ewm(
-        span=21, adjust=False
+    d["EMA21"] = close.ewm(
+        span=21,
+        adjust=False
     ).mean()
 
-    df["EMA50"] = close.ewm(
-        span=50, adjust=False
+    d["EMA50"] = close.ewm(
+        span=50,
+        adjust=False
     ).mean()
 
+    # RSI 14
     delta = close.diff()
 
     gain = delta.clip(lower=0)
@@ -117,711 +249,836 @@ def hitung_indikator(df):
         adjust=False
     ).mean()
 
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-
-    df["RSI"] = 100 - (100 / (1 + rs))
-
-    df.loc[
-        (avg_loss == 0) & (avg_gain > 0),
-        "RSI"
-    ] = 100
-
-    df.loc[
-        (avg_gain == 0) & (avg_loss > 0),
-        "RSI"
-    ] = 0
-
-    df["AVG_VOL20"] = df["Volume"].rolling(20).mean()
-
-    df["VOL_RATIO"] = (
-        df["Volume"] /
-        df["AVG_VOL20"].replace(0, np.nan)
+    rs = avg_gain / avg_loss.replace(
+        0,
+        np.nan
     )
 
-    df["HIGH20_PREV"] = high.shift(1).rolling(20).max()
+    rsi = 100 - (
+        100 / (1 + rs)
+    )
 
+    # Penanganan kasus khusus RSI
+    rsi = rsi.mask(
+        (avg_loss == 0) & (avg_gain > 0),
+        100
+    )
+
+    rsi = rsi.mask(
+        (avg_gain == 0) & (avg_loss > 0),
+        0
+    )
+
+    rsi = rsi.mask(
+        (avg_gain == 0) & (avg_loss == 0),
+        50
+    )
+
+    d["RSI14"] = rsi.fillna(50)
+
+    # Volume
+    d["AVG_VOL20"] = volume.rolling(
+        20
+    ).mean()
+
+    d["VOL_RATIO"] = (
+        volume
+        / d["AVG_VOL20"].replace(0, np.nan)
+    )
+
+    # Harga tertinggi 20 hari sebelumnya
+    d["HIGH20_PREV"] = (
+        high.shift(1)
+        .rolling(20)
+        .max()
+    )
+
+    # ATR 14
     prev_close = close.shift(1)
 
-    tr1 = high - low
-    tr2 = (high - prev_close).abs()
-    tr3 = (low - prev_close).abs()
-
-    true_range = pd.concat(
-        [tr1, tr2, tr3],
+    tr = pd.concat(
+        [
+            high - low,
+            (high - prev_close).abs(),
+            (low - prev_close).abs()
+        ],
         axis=1
     ).max(axis=1)
 
-    df["ATR14"] = true_range.rolling(14).mean()
+    d["ATR14"] = tr.rolling(14).mean()
 
-    df["CHANGE_PCT"] = close.pct_change() * 100
+    # Perubahan harga harian
+    d["CHANGE_PCT"] = (
+        close.pct_change() * 100
+    )
 
-    return df
+    # Perkiraan nilai transaksi
+    d["NILAI_TRANSAKSI"] = (
+        close * volume
+    )
+
+    d["AVG_NILAI20"] = (
+        d["NILAI_TRANSAKSI"]
+        .rolling(20)
+        .mean()
+    )
+
+    return d
 
 
-# ==========================================
-# ANALISIS SATU SAHAM
-# ==========================================
+# =========================================================
+# ANALISIS DAN PENILAIAN SAHAM
+# =========================================================
 
-def analisis_saham(ticker):
-    data = ambil_data(ticker)
+def analisis_saham(
+    kode,
+    df,
+    batas_likuiditas
+):
 
-    if data is None:
-        return None
+    d = hitung_indikator(df)
 
-    df = hitung_indikator(data)
-    x = df.iloc[-1]
+    r = d.iloc[-1]
 
-    harga = float(x["Close"])
-    ema9 = float(x["EMA9"])
-    ema21 = float(x["EMA21"])
-    ema50 = float(x["EMA50"])
+    harga = float(r["Close"])
 
-    rsi = float(x["RSI"]) if pd.notna(x["RSI"]) else 50
-    atr = float(x["ATR14"]) if pd.notna(x["ATR14"]) else 0
+    ema9 = float(r["EMA9"])
+    ema21 = float(r["EMA21"])
+    ema50 = float(r["EMA50"])
 
-    vol_ratio = (
-        float(x["VOL_RATIO"])
-        if pd.notna(x["VOL_RATIO"])
-        else 0
+    rsi = float(r["RSI14"])
+
+    volume_ratio = (
+        float(r["VOL_RATIO"])
+        if pd.notna(r["VOL_RATIO"])
+        else 0.0
+    )
+
+    atr = (
+        float(r["ATR14"])
+        if pd.notna(r["ATR14"])
+        and r["ATR14"] > 0
+        else harga * 0.03
     )
 
     high20 = (
-        float(x["HIGH20_PREV"])
-        if pd.notna(x["HIGH20_PREV"])
-        else 0
+        float(r["HIGH20_PREV"])
+        if pd.notna(r["HIGH20_PREV"])
+        else np.nan
     )
 
-    perubahan = (
-        float(x["CHANGE_PCT"])
-        if pd.notna(x["CHANGE_PCT"])
-        else 0
+    avg_nilai = (
+        float(r["AVG_NILAI20"])
+        if pd.notna(r["AVG_NILAI20"])
+        else 0.0
     )
 
+    # Tren
+    tren_naik = (
+        harga > ema21
+        and ema9 > ema21
+        and ema21 > ema50
+    )
+
+    tren_menengah = (
+        harga > ema21
+        and ema9 > ema21
+    )
+
+    # Breakout
+    breakout = (
+        pd.notna(high20)
+        and harga > high20
+    )
+
+    # Likuiditas
+    likuid = (
+        avg_nilai >= batas_likuiditas
+    )
+
+    # Skor teknikal, maksimum 100
     skor = 0
-    alasan = []
 
-    if harga > ema9:
-        skor += 10
-        alasan.append("Harga di atas EMA9")
-
-    if ema9 > ema21:
-        skor += 10
-        alasan.append("EMA9 di atas EMA21")
-
-    if harga > ema50:
-        skor += 10
-        alasan.append("Harga di atas EMA50")
-
-    if 50 <= rsi <= 65:
-        skor += 20
-        alasan.append("Momentum RSI relatif sehat")
-    elif 45 <= rsi < 50:
-        skor += 10
-        alasan.append("RSI mulai menguat")
-    elif 65 < rsi <= 70:
-        skor += 12
-        alasan.append("Momentum relatif kuat")
-    elif rsi > 70:
-        skor += 5
-        alasan.append("RSI tinggi, waspadai koreksi")
-    else:
-        alasan.append("Momentum RSI belum kuat")
-
-    if vol_ratio >= 2:
-        skor += 20
-        alasan.append("Volume lebih dari 2x rata-rata")
-    elif vol_ratio >= 1.5:
+    if tren_naik:
+        skor += 25
+    elif tren_menengah:
         skor += 15
-        alasan.append("Volume meningkat")
-    elif vol_ratio >= 1.2:
-        skor += 10
-        alasan.append("Volume di atas rata-rata")
-    elif vol_ratio >= 1:
-        skor += 5
 
-    breakout = high20 > 0 and harga > high20
+    if 50 <= rsi <= 68:
+        skor += 15
+    elif 45 <= rsi < 50:
+        skor += 7
+
+    if volume_ratio >= 1.5:
+        skor += 20
+    elif volume_ratio >= 1.0:
+        skor += 10
 
     if breakout:
         skor += 20
-        alasan.append("Breakout tertinggi 20 hari")
 
-    if perubahan > 0:
-        skor += 10
-        alasan.append("Harga naik pada sesi terakhir")
+    if likuid:
+        skor += 20
 
-    skor = min(100, skor)
-
-    if harga > ema21 and ema21 > ema50:
-        tren = "NAIK"
-    elif harga < ema21 and ema21 < ema50:
-        tren = "TURUN"
+    # Kategori
+    if tren_naik:
+        tren = "Naik"
+    elif harga > ema50:
+        tren = "Campuran"
     else:
-        tren = "SIDEWAYS / TRANSISI"
+        tren = "Turun"
 
-    if vol_ratio >= 1.5 and perubahan >= 0 and harga >= ema21:
-        akumulasi = "INDIKASI POSITIF"
-    elif vol_ratio >= 1.5 and perubahan < 0:
-        akumulasi = "WASPADA TEKANAN JUAL"
+    if skor >= 70 and likuid:
+        kategori = "Kandidat potensial"
+    elif skor >= 45:
+        kategori = "Pantauan"
     else:
-        akumulasi = "BELUM TERKONFIRMASI"
+        kategori = "Belum memenuhi"
 
-    if breakout and ema9 > ema21 and 45 <= rsi <= 70:
-        sinyal = "BREAKOUT POTENSIAL"
-    elif skor >= 60 and harga > ema21:
-        sinyal = "PANTAU"
-    else:
-        sinyal = "BELUM ADA SINYAL"
+    # Level indikatif berbasis ATR
+    area_beli_bawah = max(
+        0,
+        min(harga, ema21) - 0.25 * atr
+    )
 
-    if harga > ema21:
-        entry_bawah = min(ema9, ema21)
-        entry_atas = max(ema9, ema21)
-    else:
-        entry_bawah = max(0, harga - 0.5 * atr)
-        entry_atas = harga
+    area_beli_atas = (
+        max(harga, ema9) + 0.15 * atr
+    )
 
-    acuan_entry = max(harga, entry_atas)
+    stop_loss = max(
+        0,
+        harga - 1.5 * atr
+    )
 
-    risiko = 1.5 * atr
-    stop_loss = max(0, acuan_entry - risiko)
+    target1 = harga + 2 * atr
+    target2 = harga + 3 * atr
 
-    target1 = acuan_entry + risiko
-    target2 = acuan_entry + 2 * risiko
+    perubahan = (
+        float(r["CHANGE_PCT"])
+        if pd.notna(r["CHANGE_PCT"])
+        else 0.0
+    )
 
     return {
-        "Kode": ticker.replace(".JK", ""),
+        "Kode": kode,
         "Harga": round(harga, 2),
         "Perubahan %": round(perubahan, 2),
-        "Skor": skor,
+        "Skor": int(skor),
+        "Kategori": kategori,
         "Tren": tren,
-        "RSI": round(rsi, 2),
-        "Rasio Volume": round(vol_ratio, 2),
-        "Breakout": "YA" if breakout else "TIDAK",
-        "Indikasi Akumulasi": akumulasi,
-        "Sinyal": sinyal,
-        "Area Beli Bawah": round(entry_bawah, 2),
-        "Area Beli Atas": round(entry_atas, 2),
-        "Stop Loss": round(stop_loss, 2),
-        "Target 1": round(target1, 2),
-        "Target 2": round(target2, 2),
-        "Alasan": ", ".join(alasan)
+        "RSI": round(rsi, 1),
+        "Rasio Volume": round(volume_ratio, 2),
+        "Rata-rata Nilai Transaksi 20H (Rp)": int(
+            avg_nilai
+        ),
+        "Likuid": "Ya" if likuid else "Tidak",
+        "Breakout 20H": "Ya" if breakout else "Tidak",
+        "Area Beli Bawah": round(
+            area_beli_bawah, 2
+        ),
+        "Area Beli Atas": round(
+            area_beli_atas, 2
+        ),
+        "Stop Loss Indikatif": round(
+            stop_loss, 2
+        ),
+        "Target 1 Indikatif": round(
+            target1, 2
+        ),
+        "Target 2 Indikatif": round(
+            target2, 2
+        ),
+        "EMA9": round(ema9, 2),
+        "EMA21": round(ema21, 2),
+        "EMA50": round(ema50, 2)
     }
 
 
-# ==========================================
+# =========================================================
 # SIDEBAR
-# ==========================================
+# =========================================================
 
-st.sidebar.header("⚙️ Pengaturan")
+with st.sidebar:
 
-input_ticker = st.sidebar.text_area(
-    "Daftar kode saham BEI",
-    value=",".join(DEFAULT_TICKERS),
-    height=180
-)
+    st.header("⚙️ Pengaturan")
 
-modal = st.sidebar.number_input(
-    "Modal simulasi (Rp)",
-    min_value=100000,
-    value=1000000,
-    step=100000
-)
+    st.subheader("Daftar saham")
 
-if st.sidebar.button("🧹 Hapus cache data"):
-    ambil_data.clear()
-    st.sidebar.success("Cache berhasil dibersihkan.")
+    uploaded_csv = st.file_uploader(
+        "Unggah CSV daftar saham BEI",
+        type=["csv"],
+        help=(
+            "CSV dapat berisi kolom kode, kode saham, "
+            "ticker, atau symbol."
+        )
+    )
 
+    gabungkan_csv = st.checkbox(
+        "Gabungkan daftar CSV dengan daftar cadangan",
+        value=False
+    )
 
-# ==========================================
-# SCANNER SAHAM
-# ==========================================
+    kode_manual = st.text_area(
+        "Tambahkan kode saham manual",
+        placeholder="Contoh: BBCA, BBRI, KPIG"
+    )
 
-st.header("🔍 Scanner Saham BEI")
+    st.subheader("Modal")
 
-if st.button(
-    "MULAI SCAN SAHAM",
-    type="primary",
-    use_container_width=True
-):
+    modal = st.number_input(
+        "Modal simulasi (Rp)",
+        min_value=100000,
+        value=3000000,
+        step=100000
+    )
 
-    tickers = []
+    st.subheader("Likuiditas")
 
-    for item in input_ticker.split(","):
-        kode = item.strip().upper()
+    minimum_miliar = st.number_input(
+        "Minimum rata-rata nilai transaksi harian (Rp miliar)",
+        min_value=0.0,
+        max_value=1000.0,
+        value=1.0,
+        step=0.5
+    )
 
-        if not kode:
-            continue
+    batas_likuiditas = (
+        minimum_miliar * 1_000_000_000
+    )
 
-        if not kode.endswith(".JK"):
-            kode += ".JK"
+    st.subheader("Batas pemindaian")
 
-        if kode not in tickers:
-            tickers.append(kode)
+    jumlah_maks = st.number_input(
+        "Maksimum kode saham",
+        min_value=10,
+        max_value=1000,
+        value=150,
+        step=10
+    )
 
-    if not tickers:
-        st.error("Masukkan minimal satu kode saham.")
-
-    else:
-        hasil = []
-        gagal = []
-
-        progress = st.progress(0)
-        status = st.empty()
-
-        for i, ticker in enumerate(tickers):
-            status.write(
-                f"Memindai {ticker}: {i + 1} dari {len(tickers)}"
-            )
-
-            try:
-                item = analisis_saham(ticker)
-
-                if item is not None:
-                    hasil.append(item)
-                else:
-                    gagal.append(ticker)
-
-            except Exception:
-                gagal.append(ticker)
-
-            progress.progress((i + 1) / len(tickers))
-
-        progress.empty()
-        status.empty()
-
-        if hasil:
-            hasil_df = pd.DataFrame(hasil)
-
-            hasil_df = hasil_df.sort_values(
-                ["Skor", "Rasio Volume"],
-                ascending=[False, False]
-            ).reset_index(drop=True)
-
-            st.session_state["hasil_df"] = hasil_df
-            st.session_state["gagal"] = gagal
-        else:
-            st.error(
-                "Data saham tidak berhasil diperoleh. "
-                "Coba lagi nanti."
-            )
-
-
-# ==========================================
-# HASIL SCANNER
-# ==========================================
-
-if "hasil_df" in st.session_state:
-
-    df = st.session_state["hasil_df"]
-    gagal = st.session_state.get("gagal", [])
-
-    st.success(f"{len(df)} saham berhasil dianalisis.")
+    mulai_scan = st.button(
+        "🚀 MULAI SCAN",
+        type="primary",
+        use_container_width=True
+    )
 
     st.caption(
-        "Waktu tampilan: " +
-        datetime.now().strftime("%d-%m-%Y %H:%M:%S")
+        "Simpan GEMINI_API_KEY di Streamlit Cloud Secrets. "
+        "Jangan menaruh API key langsung di kode."
     )
 
-    c1, c2, c3, c4 = st.columns(4)
 
-    c1.metric("Saham Dipindai", len(df))
+# =========================================================
+# MENYIAPKAN DAFTAR PEMINDAIAN
+# =========================================================
 
-    c2.metric(
-        "Breakout Potensial",
-        int((df["Sinyal"] == "BREAKOUT POTENSIAL").sum())
+tickers = DEFAULT_TICKERS.copy()
+
+if gabungkan_csv and uploaded_csv is not None:
+    tickers.extend(
+        baca_csv_kode(uploaded_csv)
     )
 
-    c3.metric(
-        "Tren Naik",
-        int((df["Tren"] == "NAIK").sum())
+if kode_manual.strip():
+    tickers.extend(
+        [
+            kode
+            for kode in (
+                normalisasi_kode(x)
+                for x in kode_manual.split(",")
+            )
+            if kode
+        ]
     )
 
-    c4.metric(
-        "Indikasi Positif",
+tickers = list(dict.fromkeys(tickers))
+
+jumlah_kode_asli = len(tickers)
+
+tickers = tickers[:int(jumlah_maks)]
+
+st.info(
+    f"Jumlah kode yang akan dipindai: **{len(tickers)}**. "
+    "Daftar bawaan bukan daftar lengkap seluruh emiten BEI. "
+    "Gunakan CSV terbaru untuk memperluas cakupan."
+)
+
+if jumlah_kode_asli > len(tickers):
+    st.warning(
+        f"Ada {jumlah_kode_asli - len(tickers)} kode "
+        "yang belum dipindai karena batas maksimum."
+    )
+
+
+# =========================================================
+# SESSION STATE
+# =========================================================
+
+if "hasil_df" not in st.session_state:
+    st.session_state["hasil_df"] = pd.DataFrame()
+
+if "gagal" not in st.session_state:
+    st.session_state["gagal"] = []
+
+if "data_detail" not in st.session_state:
+    st.session_state["data_detail"] = {}
+
+
+# =========================================================
+# PROSES PEMINDAIAN
+# =========================================================
+
+if mulai_scan:
+
+    hasil = []
+    gagal = []
+    detail_data = {}
+
+    progress = st.progress(0)
+    status = st.empty()
+
+    for i, kode in enumerate(
+        tickers,
+        start=1
+    ):
+
+        status.write(
+            f"Memindai {kode} ({i}/{len(tickers)})..."
+        )
+
+        try:
+            data = ambil_data(kode)
+
+            if data.empty:
+
+                gagal.append({
+                    "Kode": kode,
+                    "Alasan": (
+                        "Data kosong atau tidak tersedia "
+                        "di Yahoo Finance"
+                    )
+                })
+
+            else:
+
+                detail_data[kode] = data
+
+                hasil.append(
+                    analisis_saham(
+                        kode,
+                        data,
+                        batas_likuiditas
+                    )
+                )
+
+        except Exception as e:
+
+            gagal.append({
+                "Kode": kode,
+                "Alasan": str(e)[:160]
+            })
+
+        progress.progress(
+            i / max(1, len(tickers))
+        )
+
+        # Mengurangi permintaan beruntun
+        time.sleep(0.1)
+
+    hasil_df = pd.DataFrame(hasil)
+
+    if not hasil_df.empty:
+
+        hasil_df = hasil_df.sort_values(
+            [
+                "Skor",
+                "Rata-rata Nilai Transaksi 20H (Rp)"
+            ],
+            ascending=[False, False]
+        ).reset_index(drop=True)
+
+    st.session_state["hasil_df"] = hasil_df
+    st.session_state["gagal"] = gagal
+    st.session_state["data_detail"] = detail_data
+
+    status.success(
+        f"Pemindaian selesai. "
+        f"Berhasil: {len(hasil)} | "
+        f"Gagal/tidak tersedia: {len(gagal)}"
+    )
+
+
+# =========================================================
+# MENAMPILKAN HASIL
+# =========================================================
+
+hasil_df = st.session_state["hasil_df"]
+
+if not hasil_df.empty:
+
+    st.divider()
+    st.subheader("🏆 Hasil Pemindaian")
+
+    col1, col2, col3 = st.columns(3)
+
+    col1.metric(
+        "Berhasil dipindai",
+        len(hasil_df)
+    )
+
+    col2.metric(
+        "Kandidat potensial",
         int(
             (
-                df["Indikasi Akumulasi"] ==
-                "INDIKASI POSITIF"
+                hasil_df["Kategori"]
+                == "Kandidat potensial"
             ).sum()
         )
     )
 
-    st.divider()
+    col3.metric(
+        "Saham memenuhi likuiditas",
+        int(
+            (
+                hasil_df["Likuid"]
+                == "Ya"
+            ).sum()
+        )
+    )
 
-    st.subheader("🏆 Ranking Saham")
+    kategori_tersedia = (
+        hasil_df["Kategori"]
+        .dropna()
+        .unique()
+        .tolist()
+    )
 
-    kolom_ranking = [
-        "Kode", "Harga", "Perubahan %",
-        "Skor", "Tren", "RSI",
-        "Rasio Volume", "Sinyal"
+    filter_kategori = st.multiselect(
+        "Filter kategori",
+        kategori_tersedia,
+        default=kategori_tersedia
+    )
+
+    hasil_tampil = hasil_df[
+        hasil_df["Kategori"].isin(
+            filter_kategori
+        )
     ]
 
     st.dataframe(
-        df[kolom_ranking],
+        hasil_tampil,
         use_container_width=True,
         hide_index=True
     )
-
-    st.subheader("🔎 Filter Sinyal")
-
-    pilihan_sinyal = st.selectbox(
-        "Pilih jenis sinyal",
-        [
-            "SEMUA",
-            "BREAKOUT POTENSIAL",
-            "PANTAU",
-            "BELUM ADA SINYAL"
-        ]
-    )
-
-    if pilihan_sinyal == "SEMUA":
-        tampilan = df.copy()
-    else:
-        tampilan = df[df["Sinyal"] == pilihan_sinyal].copy()
-
-    st.dataframe(
-        tampilan,
-        use_container_width=True,
-        hide_index=True
-    )
-
-    st.subheader("🐋 Indikasi Akumulasi / Tekanan Jual")
-
-    st.dataframe(
-        df[
-            [
-                "Kode", "Harga", "Perubahan %",
-                "Rasio Volume", "Tren",
-                "Indikasi Akumulasi"
-            ]
-        ],
-        use_container_width=True,
-        hide_index=True
-    )
-
-    st.caption(
-        "Indikasi ini hanya proksi berdasarkan harga dan volume, "
-        "bukan data transaksi broker atau bukti aktivitas bandar."
-    )
-
-    st.subheader("🎯 Rincian Strategi Saham")
-
-    kode_pilihan = st.selectbox(
-        "Pilih saham untuk melihat rincian",
-        df["Kode"].tolist(),
-        key="pilihan_rincian"
-    )
-
-    r = df[df["Kode"] == kode_pilihan].iloc[0]
-
-    a, b, c = st.columns(3)
-
-    a.metric("Harga", f"Rp{r['Harga']:,.2f}")
-    b.metric("Skor Teknikal", f"{r['Skor']}/100")
-    c.metric("Tren", r["Tren"])
-
-    st.write("**Sinyal:**", r["Sinyal"])
-    st.write("**RSI:**", r["RSI"])
-    st.write("**Rasio volume:**", r["Rasio Volume"], "kali")
-    st.write("**Breakout:**", r["Breakout"])
-    st.write("**Indikasi akumulasi:**", r["Indikasi Akumulasi"])
-
-    st.write(
-        "**Area beli potensial:**",
-        f"Rp{r['Area Beli Bawah']:,.2f} - "
-        f"Rp{r['Area Beli Atas']:,.2f}"
-    )
-
-    st.write("**Stop loss simulasi:**", f"Rp{r['Stop Loss']:,.2f}")
-    st.write("**Target 1 simulasi:**", f"Rp{r['Target 1']:,.2f}")
-    st.write("**Target 2 simulasi:**", f"Rp{r['Target 2']:,.2f}")
-    st.write("**Alasan skor:**", r["Alasan"])
-
-    st.subheader("📈 Grafik Harga dan EMA")
-
-    data_grafik = ambil_data(kode_pilihan + ".JK")
-
-    if data_grafik is not None:
-        grafik = hitung_indikator(data_grafik)
-
-        st.line_chart(
-            grafik[["Close", "EMA9", "EMA21", "EMA50"]].tail(90)
-        )
-
-    st.subheader("💰 Simulasi Pembelian Saham")
-
-    modal_simulasi = st.number_input(
-        "Modal yang akan disimulasikan (Rp)",
-        min_value=0,
-        value=int(modal),
-        step=100000,
-        key="modal_simulasi"
-    )
-
-    harga_lot = float(r["Harga"]) * 100
-
-    jumlah_lot = (
-        int(modal_simulasi // harga_lot)
-        if harga_lot > 0 else 0
-    )
-
-    total_biaya = jumlah_lot * harga_lot
-    sisa_modal = modal_simulasi - total_biaya
-
-    c1, c2, c3 = st.columns(3)
-
-    c1.metric("Modal", f"Rp{modal_simulasi:,.0f}")
-    c2.metric("Perkiraan Lot", f"{jumlah_lot} lot")
-    c3.metric("Sisa Modal", f"Rp{sisa_modal:,.0f}")
-
-    st.caption(
-        "Simulasi belum memperhitungkan biaya broker dan perubahan harga."
-    )
-
-    st.subheader("📥 Unduh Hasil Scanner")
-
-    csv = df.to_csv(index=False).encode("utf-8-sig")
 
     st.download_button(
-        "Download hasil analisis CSV",
-        data=csv,
-        file_name="hasil_bot_ai_saham.csv",
-        mime="text/csv",
-        use_container_width=True
+        "⬇️ Download hasil pemindaian CSV",
+        data=hasil_tampil.to_csv(
+            index=False
+        ).encode("utf-8-sig"),
+        file_name="hasil_scan_saham_bei.csv",
+        mime="text/csv"
     )
 
-    if gagal:
-        with st.expander("Saham yang gagal dipindai"):
-            st.write(", ".join(gagal))
+    # =====================================================
+    # DETAIL SAHAM
+    # =====================================================
 
-    st.warning(
-        "Skor teknikal bukan probabilitas pasti harga naik. "
-        "Target dan stop loss adalah simulasi, bukan jaminan."
+    st.divider()
+    st.subheader("🔎 Detail Saham")
+
+    pilihan_saham = st.selectbox(
+        "Pilih kode saham",
+        hasil_df["Kode"].tolist()
     )
 
-else:
-    st.info(
-        "Tekan tombol MULAI SCAN SAHAM untuk memulai pemindaian."
+    row = hasil_df[
+        hasil_df["Kode"] == pilihan_saham
+    ].iloc[0]
+
+    c1, c2, c3, c4 = st.columns(4)
+
+    c1.metric(
+        "Harga terakhir",
+        f"Rp {row['Harga']:,.0f}"
     )
 
+    c2.metric(
+        "Skor teknikal",
+        f"{row['Skor']}/100"
+    )
 
-# ==========================================
-# ANALISIS AI GEMINI
-# ==========================================
+    c3.metric(
+        "RSI",
+        row["RSI"]
+    )
+
+    c4.metric(
+        "Rasio volume",
+        row["Rasio Volume"]
+    )
+
+    st.write(
+        f"**Kategori:** {row['Kategori']}  \n"
+        f"**Tren:** {row['Tren']}  \n"
+        f"**Breakout 20 hari:** {row['Breakout 20H']}  \n"
+        f"**Likuid menurut batas pilihan:** {row['Likuid']}"
+    )
+
+    st.write(
+        f"**Area beli indikatif:** "
+        f"Rp {row['Area Beli Bawah']:,.0f} "
+        f"– Rp {row['Area Beli Atas']:,.0f}"
+    )
+
+    st.write(
+        f"**Stop loss indikatif:** "
+        f"Rp {row['Stop Loss Indikatif']:,.0f}"
+    )
+
+    st.write(
+        f"**Target 1 indikatif:** "
+        f"Rp {row['Target 1 Indikatif']:,.0f}"
+    )
+
+    st.write(
+        f"**Target 2 indikatif:** "
+        f"Rp {row['Target 2 Indikatif']:,.0f}"
+    )
+
+    # =====================================================
+    # SIMULASI MODAL
+    # =====================================================
+
+    st.divider()
+    st.subheader("💰 Simulasi Pembelian")
+
+    harga_saham = float(row["Harga"])
+
+    nilai_per_lot = harga_saham * 100
+
+    if nilai_per_lot > 0:
+
+        jumlah_lot = int(
+            modal // nilai_per_lot
+        )
+
+        total_beli = (
+            jumlah_lot * nilai_per_lot
+        )
+
+        sisa_modal = modal - total_beli
+
+        sc1, sc2, sc3 = st.columns(3)
+
+        sc1.metric(
+            "Perkiraan lot",
+            f"{jumlah_lot:,}"
+        )
+
+        sc2.metric(
+            "Nilai pembelian",
+            f"Rp {total_beli:,.0f}"
+        )
+
+        sc3.metric(
+            "Sisa modal",
+            f"Rp {sisa_modal:,.0f}"
+        )
+
+        st.caption(
+            "Simulasi belum memperhitungkan biaya transaksi, "
+            "slippage, atau perubahan harga."
+        )
+
+    # =====================================================
+    # GRAFIK HARGA DAN EMA
+    # =====================================================
+
+    st.divider()
+    st.subheader("📊 Grafik Harga dan EMA")
+
+    data_detail = (
+        st.session_state["data_detail"]
+        .get(pilihan_saham)
+    )
+
+    if data_detail is not None and not data_detail.empty:
+
+        grafik = hitung_indikator(
+            data_detail
+        )[
+            [
+                "Close",
+                "EMA9",
+                "EMA21",
+                "EMA50"
+            ]
+        ].tail(90)
+
+        st.line_chart(grafik)
+
+        st.caption(
+            "Grafik menunjukkan harga penutupan dan EMA "
+            "hingga 90 sesi terakhir yang tersedia."
+        )
+
+
+# =========================================================
+# DAFTAR SAHAM GAGAL
+# =========================================================
+
+gagal = st.session_state["gagal"]
+
+if gagal:
+
+    st.divider()
+
+    with st.expander(
+        f"⚠️ Saham gagal/tidak tersedia ({len(gagal)})"
+    ):
+
+        st.dataframe(
+            pd.DataFrame(gagal),
+            use_container_width=True,
+            hide_index=True
+        )
+
+        st.download_button(
+            "⬇️ Download daftar saham gagal",
+            data=pd.DataFrame(gagal).to_csv(
+                index=False
+            ).encode("utf-8-sig"),
+            file_name="saham_gagal_scan.csv",
+            mime="text/csv"
+        )
+
+
+# =========================================================
+# GEMINI AI
+# =========================================================
 
 st.divider()
-st.header("🤖 AI Analisis Data Saham")
+st.subheader("🤖 Analisis Saham dengan Gemini AI")
 
-st.write(
-    "Masukkan kode saham. Bot mengambil data harga dan volume "
-    "untuk dianalisis Gemini AI."
+st.caption(
+    "Gemini membantu menafsirkan indikator. "
+    "Hasil AI bukan jaminan keuntungan."
 )
 
-kode_ai = st.text_input(
-    "Kode saham untuk dianalisis AI",
-    value="BBRI",
-    key="kode_ai_otomatis"
-).upper().strip()
+if not hasil_df.empty:
 
-if st.button(
-    "ANALISIS DATA DENGAN AI",
-    key="analisis_data_ai",
-    type="primary"
-):
+    kode_ai = st.selectbox(
+        "Pilih saham untuk analisis AI",
+        hasil_df["Kode"].tolist(),
+        key="pilihan_ai"
+    )
 
-    if not kode_ai:
-        st.warning("Masukkan kode saham terlebih dahulu.")
+    if st.button("✨ Analisis dengan Gemini AI"):
 
-    else:
         try:
+
+            api_key = st.secrets[
+                "GEMINI_API_KEY"
+            ]
+
             from google import genai
 
-            api_key = st.secrets["GEMINI_API_KEY"]
-            client = genai.Client(api_key=api_key)
+            client = genai.Client(
+                api_key=api_key
+            )
 
-            ticker_ai = kode_ai
+            baris = hasil_df[
+                hasil_df["Kode"] == kode_ai
+            ].iloc[0].to_dict()
 
-            if not ticker_ai.endswith(".JK"):
-                ticker_ai += ".JK"
+            prompt = f"""
+Anda adalah asisten analisis saham Indonesia.
+
+Analisis data teknikal berikut dalam bahasa Indonesia.
+
+Kode saham: {kode_ai}
+
+DATA:
+{baris}
+
+Bahas:
+1. Kondisi tren berdasarkan EMA.
+2. RSI dan momentum.
+3. Rasio volume.
+4. Likuiditas berdasarkan perkiraan nilai transaksi.
+5. Apakah ada indikasi breakout 20 hari.
+6. Risiko penurunan harga.
+7. Skenario bullish, netral, dan bearish.
+8. Hal yang perlu dikonfirmasi sebelum membeli.
+
+Aturan:
+- Jangan mengarang data fundamental atau berita.
+- Jangan mengklaim mengetahui aktivitas bandar.
+- Jangan menjanjikan keuntungan.
+- Jelaskan bahwa indikator teknikal memiliki keterbatasan.
+- Jika data tidak cukup, katakan secara terbuka.
+- Berikan analisis yang seimbang, bukan perintah membeli atau menjual.
+- Tegaskan bahwa ini bukan nasihat keuangan.
+"""
 
             with st.spinner(
-                "Mengambil data dan meminta analisis Gemini AI..."
+                "Gemini sedang menganalisis..."
             ):
 
-                data_ai = ambil_data(ticker_ai)
-
-                if data_ai is None:
-                    st.error(
-                        "Data saham tidak ditemukan atau belum cukup."
+                response = (
+                    client.models.generate_content(
+                        model="gemini-3.8-flash",
+                        contents=prompt
                     )
+                )
 
-                else:
-                    df_ai = hitung_indikator(data_ai)
-                    terakhir = df_ai.iloc[-1]
+            if response.text:
 
-                    harga = float(terakhir["Close"])
-                    ema9 = float(terakhir["EMA9"])
-                    ema21 = float(terakhir["EMA21"])
-                    ema50 = float(terakhir["EMA50"])
+                st.markdown(
+                    response.text
+                )
 
-                    rsi = (
-                        float(terakhir["RSI"])
-                        if pd.notna(terakhir["RSI"])
-                        else None
-                    )
+            else:
 
-                    volume = float(terakhir["Volume"])
+                st.warning(
+                    "Gemini tidak mengembalikan teks."
+                )
 
-                    rasio_volume = (
-                        float(terakhir["VOL_RATIO"])
-                        if pd.notna(terakhir["VOL_RATIO"])
-                        else None
-                    )
+        except KeyError:
 
-                    perubahan_harian = (
-                        float(terakhir["CHANGE_PCT"])
-                        if pd.notna(terakhir["CHANGE_PCT"])
-                        else 0
-                    )
-
-                    if len(df_ai) >= 22:
-                        perubahan_bulanan = (
-                            harga / float(df_ai["Close"].iloc[-22]) - 1
-                        ) * 100
-                    else:
-                        perubahan_bulanan = None
-
-                    ringkasan_ai = {
-                        "Kode saham": kode_ai,
-                        "Tanggal data terakhir": str(
-                            df_ai.index[-1].date()
-                        ),
-                        "Harga penutupan": round(harga, 2),
-                        "Perubahan harian (%)": round(
-                            perubahan_harian, 2
-                        ),
-                        "Perubahan sekitar 1 bulan (%)": (
-                            round(perubahan_bulanan, 2)
-                            if perubahan_bulanan is not None
-                            else "Data belum cukup"
-                        ),
-                        "EMA 9": round(ema9, 2),
-                        "EMA 21": round(ema21, 2),
-                        "EMA 50": round(ema50, 2),
-                        "RSI 14": (
-                            round(rsi, 2)
-                            if rsi is not None
-                            else "Tidak tersedia"
-                        ),
-                        "Volume terakhir": int(volume),
-                        "Rasio volume rata-rata 20 hari": (
-                            round(rasio_volume, 2)
-                            if rasio_volume is not None
-                            else "Tidak tersedia"
-                        )
-                    }
-
-                    prompt_ai = f"""
-                    Kamu adalah asisten analis saham Bursa Efek Indonesia.
-
-                    Analisis berdasarkan data berikut:
-                    {ringkasan_ai}
-
-                    Berikan analisis dalam bahasa Indonesia:
-
-                    1. Ringkasan kondisi saham.
-                    2. Tren berdasarkan EMA 9, 21, dan 50.
-                    3. Momentum RSI dan perubahan harga.
-                    4. Volume dan kemungkinan tekanan beli atau jual.
-                    5. Skenario bullish dan bearish.
-                    6. Area beli, target, dan stop loss jika data cukup.
-                    7. Risiko utama dan kesimpulan.
-
-                    Jelaskan dasar setiap perkiraan harga.
-                    Jangan mengarang harga real-time, transaksi broker,
-                    aktivitas bandar, berita, atau laporan fundamental.
-                    Data harga dan volume bukan bukti aktivitas bandar.
-                    Bedakan fakta dengan perkiraan.
-                    Analisis bukan jaminan keuntungan.
-                    """
-
-                    respons_ai = None
-                    error_ai = None
-
-                    # Coba maksimal 3 kali jika Gemini gagal
-                    for percobaan in range(3):
-                        try:
-                            respons_ai = client.models.generate_content(
-                                model="gemini-3.8-flash",
-                                contents=prompt_ai
-                            )
-                            break
-
-                        except Exception as e:
-                            error_ai = e
-                            pesan_error = str(e)
-
-                            # Ulangi hanya untuk gangguan sementara
-                            sementara = (
-                                "503" in pesan_error
-                                or "UNAVAILABLE" in pesan_error
-                                or "429" in pesan_error
-                                or "RESOURCE_EXHAUSTED" in pesan_error
-                                or "500" in pesan_error
-                                or "INTERNAL" in pesan_error
-                            )
-
-                            if sementara and percobaan < 2:
-                                time.sleep(3 * (percobaan + 1))
-                            else:
-                                break
-
-                    if respons_ai is None:
-                        st.error(
-                            "Analisis Gemini gagal. "
-                            "Periksa nama model, API key, kuota, "
-                            "atau kondisi server."
-                        )
-
-                        if error_ai is not None:
-                            st.caption(str(error_ai))
-
-                    else:
-                        st.subheader("📊 Data yang Dianalisis")
-                        st.json(ringkasan_ai)
-
-                        hasil_teks = respons_ai.text or ""
-
-                        st.subheader("🤖 Hasil Analisis Gemini AI")
-
-                        if hasil_teks:
-                            st.markdown(hasil_teks)
-                        else:
-                            st.warning(
-                                "Gemini tidak mengembalikan teks. "
-                                "Coba lagi."
-                            )
+            st.error(
+                "GEMINI_API_KEY belum ditemukan. "
+                "Buka Streamlit Cloud, masuk ke Settings, "
+                "lalu Secrets."
+            )
 
         except Exception as e:
+
             st.error(
-                "Analisis AI gagal. Periksa koneksi, "
-                "API key, kuota, dan konfigurasi Gemini."
+                f"Analisis Gemini gagal: {e}"
             )
-            st.caption(str(e))
+
+else:
+
+    st.info(
+        "Jalankan pemindaian terlebih dahulu "
+        "untuk menggunakan Gemini AI."
+    )
 
 
-# ==========================================
-# FOOTER
-# ==========================================
+# =========================================================
+# CATATAN
+# =========================================================
 
 st.divider()
 
 st.caption(
-    "BOT AI SAHAM BEI 3.1 | Data historis Yahoo Finance "
-    "| Analisis Gemini AI | Bukan penasihat keuangan."
-)
-
-st.caption(
-    "Aplikasi tidak mengeksekusi transaksi otomatis. "
-    "Data dapat terlambat atau tidak lengkap. "
-    "Periksa kondisi emiten dan risiko sebelum bertransaksi."
+    "BOT AI SAHAM BEI 4.0 | "
+    "Sumber harga: Yahoo Finance. "
+    "Nilai transaksi merupakan perkiraan harga × volume, "
+    "bukan data order book atau bukti aktivitas bandar. "
+    "Level beli, stop loss, dan target merupakan perkiraan "
+    "teknikal, bukan kepastian. "
+    "Verifikasi data sebelum mengambil keputusan investasi."
 )
