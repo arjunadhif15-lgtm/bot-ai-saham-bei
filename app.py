@@ -595,7 +595,7 @@ Jangan menjamin keuntungan. Jika data kurang, nyatakan.
 """
 
     response = client.models.generate_content(
-        model=model.strip() or "gemini-2.5-flash",
+        model=model.strip() or "gemini-3.8-flash",
         contents=prompt
     )
 
@@ -714,7 +714,7 @@ with st.sidebar:
 
     gemini_model = st.text_input(
         "Nama model",
-        value="gemini-2.5-flash"
+        value="gemini-3.8-flash"
     )
 
     st.divider()
