@@ -1,6 +1,6 @@
+import json
 import os
 import re
-import json
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -10,391 +10,621 @@ import pandas as pd
 import requests
 import yfinance as yf
 
+
+# ============================================================
+# PENGATURAN BOT
+# ============================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(BASE_DIR, "sent_notifications.json")
 
-MAX_TICKERS = 100
 MIN_SCORE = 70
-MODE = "Swing Trading"
+MIN_VOLUME_RATIO = 1.2
+MAX_TICKERS = None  # None = pindai semua saham di DEFAULT_TICKERS
+REQUEST_DELAY_SECONDS = 0.25
+YF_PERIOD = "1y"
+YF_INTERVAL = "1d"
+TIMEZONE = "Asia/Jakarta"
 
 
+# ============================================================
+# MEMBACA DAFTAR SAHAM DARI app.py
+# ============================================================
 def load_tickers():
-    path = os.path.join(BASE_DIR, "app.py")
+    """Mengambil semua kode saham dari DEFAULT_TICKERS di app.py."""
+    app_path = os.path.join(BASE_DIR, "app.py")
 
-    with open(path, "r", encoding="utf-8") as f:
-        source = f.read()
+    if not os.path.isfile(app_path):
+        raise FileNotFoundError(
+            "app.py tidak ditemukan di folder yang sama dengan scanner.py"
+        )
+
+    with open(app_path, "r", encoding="utf-8") as file:
+        source = file.read()
 
     match = re.search(
         r'DEFAULT_TICKERS\s*=\s*"""(.*?)"""\s*\.split\(\)',
         source,
-        re.DOTALL
+        re.DOTALL,
     )
 
     if not match:
         raise RuntimeError(
-            "DEFAULT_TICKERS tidak ditemukan di app.py"
+            'DEFAULT_TICKERS tidak ditemukan. Pastikan format di app.py adalah '
+            'DEFAULT_TICKERS = """ ... """.split()'
         )
 
-    tickers = list(dict.fromkeys(match.group(1).split()))
+    tickers = []
 
-    return tickers[:MAX_TICKERS]
+    for ticker in match.group(1).split():
+        ticker = ticker.strip().upper()
+
+        if ticker and ticker not in tickers:
+            tickers.append(ticker)
+
+    if MAX_TICKERS is not None:
+        tickers = tickers[:MAX_TICKERS]
+
+    if not tickers:
+        raise RuntimeError("Daftar DEFAULT_TICKERS kosong.")
+
+    return tickers
 
 
+# ============================================================
+# STATUS NOTIFIKASI
+# MAKSIMAL 1 NOTIFIKASI PER SAHAM PER HARI
+# ============================================================
 def load_state():
-    if not os.path.exists(STATE_FILE):
+    if not os.path.isfile(STATE_FILE):
         return {}
 
     try:
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        with open(STATE_FILE, "r", encoding="utf-8") as file:
+            data = json.load(file)
+
+        return data if isinstance(data, dict) else {}
+
     except (json.JSONDecodeError, OSError):
-        raise RuntimeError(
-            "File sent_notifications.json tidak bisa dibaca. "
-            "Periksa file tersebut sebelum menjalankan ulang."
+        print(
+            "PERINGATAN: sent_notifications.json tidak terbaca. "
+            "Memulai status kosong."
         )
+        return {}
 
 
 def save_state(state):
-    temporary_file = STATE_FILE + ".tmp"
+    """Simpan status secara aman."""
+    temp_path = STATE_FILE + ".tmp"
 
-    with open(temporary_file, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2, ensure_ascii=False)
+    with open(temp_path, "w", encoding="utf-8") as file:
+        json.dump(state, file, ensure_ascii=False, indent=2)
 
-    os.replace(temporary_file, STATE_FILE)
+    os.replace(temp_path, STATE_FILE)
 
 
+# ============================================================
+# MENGAMBIL DATA HARGA HARIAN
+# ============================================================
 def fetch_history(ticker):
-    symbol = ticker + ".JK"
+    yahoo_ticker = f"{ticker}.JK"
 
-    df = yf.download(
-        symbol,
-        period="1y",
-        interval="1d",
-        auto_adjust=True,
-        progress=False,
-        threads=False
-    )
+    try:
+        data = yf.download(
+            yahoo_ticker,
+            period=YF_PERIOD,
+            interval=YF_INTERVAL,
+            auto_adjust=True,
+            progress=False,
+            threads=False,
+            timeout=20,
+        )
 
-    if df is None or df.empty:
-        return pd.DataFrame()
+    except Exception as exc:
+        print(f"GAGAL mengambil data {ticker}: {exc}")
+        return None
 
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+    if data is None or data.empty:
+        print(f"TIDAK ADA DATA: {ticker}")
+        return None
 
-    df.columns = [str(c).title() for c in df.columns]
+    # Menangani kolom MultiIndex dari yfinance.
+    if isinstance(data.columns, pd.MultiIndex):
+        data.columns = data.columns.get_level_values(0)
+
+    data.columns = [str(col).title() for col in data.columns]
 
     required = ["High", "Low", "Close", "Volume"]
 
-    if not all(c in df.columns for c in required):
-        return pd.DataFrame()
-
-    return df[required].dropna(subset=["Close"]).copy()
-
-
-def analyze_stock(ticker):
-    df = fetch_history(ticker)
-
-    if df.empty or len(df) < 55:
+    if any(col not in data.columns for col in required):
+        print(f"DATA TIDAK LENGKAP: {ticker}")
         return None
 
-    close = df["Close"].astype(float)
-    high = df["High"].astype(float)
-    low = df["Low"].astype(float)
-    volume = df["Volume"].astype(float)
+    data = data[required].copy()
 
-    ema9 = close.ewm(span=9, adjust=False).mean()
-    ema21 = close.ewm(span=21, adjust=False).mean()
-    ema50 = close.ewm(span=50, adjust=False).mean()
+    for col in required:
+        data[col] = pd.to_numeric(data[col], errors="coerce")
 
+    data = data.dropna(
+        subset=["High", "Low", "Close", "Volume"]
+    )
+
+    data = data[
+        (data["Close"] > 0) &
+        (data["Volume"] >= 0)
+    ]
+
+    if len(data) < 60:
+        print(
+            f"DATA BELUM CUKUP (kurang dari 60 candle): {ticker}"
+        )
+        return None
+
+    return data
+
+
+# ============================================================
+# ANALISIS TEKNIKAL DAN PERHITUNGAN SKOR
+# ============================================================
+def analyze_stock(ticker, data):
+    close = data["Close"]
+    high = data["High"]
+    low = data["Low"]
+    volume = data["Volume"]
+
+    # EMA
+    ema9 = close.ewm(
+        span=9,
+        adjust=False
+    ).mean()
+
+    ema21 = close.ewm(
+        span=21,
+        adjust=False
+    ).mean()
+
+    ema50 = close.ewm(
+        span=50,
+        adjust=False
+    ).mean()
+
+    # RSI 14
     delta = close.diff()
 
-    gain = delta.clip(lower=0).ewm(
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+
+    avg_gain = gain.ewm(
         alpha=1 / 14,
         min_periods=14,
         adjust=False
     ).mean()
 
-    loss = (-delta.clip(upper=0)).ewm(
+    avg_loss = loss.ewm(
         alpha=1 / 14,
         min_periods=14,
         adjust=False
     ).mean()
 
-    rs = gain / loss.replace(0, np.nan)
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+
     rsi = 100 - (100 / (1 + rs))
+    rsi = rsi.fillna(100).clip(0, 100)
 
-    rsi = rsi.mask((loss == 0) & (gain > 0), 100)
-    rsi = rsi.mask((gain == 0) & (loss > 0), 0)
+    # Rasio volume terhadap rata-rata 20 hari
+    avg_volume20 = volume.rolling(20).mean()
 
-    avg_volume = volume.rolling(20).mean()
-    vol_ratio = volume / avg_volume.replace(0, np.nan)
+    if (
+        pd.notna(avg_volume20.iloc[-1])
+        and avg_volume20.iloc[-1] > 0
+    ):
+        volume_ratio = (
+            volume.iloc[-1] / avg_volume20.iloc[-1]
+        )
+    else:
+        volume_ratio = 0
 
-    prev_high10 = high.shift(1).rolling(10).max()
-    prev_high20 = high.shift(1).rolling(20).max()
+    # Breakout terhadap tertinggi 20 candle sebelumnya
+    prior_high20 = (
+        high.shift(1).rolling(20).max().iloc[-1]
+    )
 
+    price = float(close.iloc[-1])
+    ema9_now = float(ema9.iloc[-1])
+    ema21_now = float(ema21.iloc[-1])
+    ema50_now = float(ema50.iloc[-1])
+    rsi_now = float(rsi.iloc[-1])
+
+    high20 = (
+        float(prior_high20)
+        if pd.notna(prior_high20)
+        else np.nan
+    )
+
+    # Kondisi teknikal
+    trend_up = ema9_now > ema21_now
+    trend_medium_up = ema21_now > ema50_now
+
+    breakout20 = (
+        pd.notna(high20)
+        and price > high20
+    )
+
+    volume_strong = volume_ratio >= MIN_VOLUME_RATIO
+    price_above_ema21 = price > ema21_now
+
+    # ATR 14 untuk perkiraan risiko
     previous_close = close.shift(1)
 
     true_range = pd.concat(
         [
             high - low,
             (high - previous_close).abs(),
-            (low - previous_close).abs()
+            (low - previous_close).abs(),
         ],
-        axis=1
+        axis=1,
     ).max(axis=1)
 
-    atr = true_range.rolling(14).mean()
+    atr14 = true_range.rolling(14).mean().iloc[-1]
 
-    price = float(close.iloc[-1])
+    if pd.notna(atr14):
+        atr14 = float(atr14)
+    else:
+        atr14 = price * 0.03
 
-    if not np.isfinite(price) or price <= 0:
-        return None
-
-    e9 = float(ema9.iloc[-1])
-    e21 = float(ema21.iloc[-1])
-    e50 = float(ema50.iloc[-1])
-
-    r = float(rsi.iloc[-1]) if pd.notna(rsi.iloc[-1]) else 50
-
-    vr = (
-        float(vol_ratio.iloc[-1])
-        if pd.notna(vol_ratio.iloc[-1])
-        else 0
-    )
-
-    a = (
-        float(atr.iloc[-1])
-        if pd.notna(atr.iloc[-1])
-        else price * 0.03
-    )
-
-    a = max(a, price * 0.005)
-
-    turnover = float(
-        (close * volume).tail(20).mean()
-    )
-
-    breakout10 = (
-        pd.notna(prev_high10.iloc[-1])
-        and price > float(prev_high10.iloc[-1])
-    )
-
-    breakout20 = (
-        pd.notna(prev_high20.iloc[-1])
-        and price > float(prev_high20.iloc[-1])
-    )
-
+    # ========================================================
+    # SKOR TEKNIKAL
+    # Maksimum skor: 100
+    # ========================================================
     score = 0
-    notes = []
 
-    if price > e9 > e21:
+    if trend_up:
         score += 20
-        notes.append("Tren pendek positif")
-    elif price > e21:
-        score += 12
-        notes.append("Harga di atas EMA21")
 
-    if price > e50:
-        score += 10
-        notes.append("Harga di atas EMA50")
-
-    if 50 <= r <= 68:
+    if trend_medium_up:
         score += 15
-        notes.append("Momentum RSI mendukung")
-    elif 42 <= r < 50:
-        score += 8
-
-    if vr >= 1.8:
-        score += 20
-        notes.append("Volume melonjak")
-    elif vr >= 1.2:
-        score += 12
-        notes.append("Volume di atas rata-rata")
 
     if breakout20:
-        score += 20
-        notes.append("Breakout high 20 hari")
-    elif breakout10:
-        score += 12
-        notes.append("Breakout high 10 hari")
+        score += 25
 
-    if turnover >= 5_000_000_000:
+    if volume_strong:
         score += 15
-        notes.append("Nilai transaksi rata-rata tinggi")
-    elif turnover >= 1_000_000_000:
-        score += 10
-        notes.append("Nilai transaksi cukup")
-    elif turnover >= 250_000_000:
+
+    if 50 <= rsi_now <= 65:
+        score += 15
+
+    elif 45 <= rsi_now < 50:
         score += 5
 
-    score = min(score, 100)
+    elif 65 < rsi_now <= 70:
+        score += 10
 
-    breakout = breakout20
+    if price > ema9_now:
+        score += 10
 
-    if score >= 70 and (
-        breakout or (price > e21 and vr >= 1.2)
-    ):
-        signal = "KANDIDAT"
-    elif score >= 45:
-        signal = "PANTAU"
-    else:
-        signal = "BELUM MEMENUHI"
-
-    entry_low = max(0, price - 0.35 * a)
-    entry_high = price + 0.20 * a
-    stop = max(0, price - 1.5 * a)
-
-    target1 = price + 1.5 * a
-    target2 = price + 2.5 * a
-    target3 = price + 3.5 * a
-
-    previous_price = float(close.iloc[-2])
-
-    change_pct = (
-        (price / previous_price - 1) * 100
-        if previous_price > 0
-        else 0
+    # ========================================================
+    # SYARAT KANDIDAT PILIHAN A
+    # Skor >= 70 DAN memenuhi kondisi teknikal.
+    # ========================================================
+    technical_condition = (
+        breakout20
+        or (
+            price_above_ema21
+            and volume_strong
+        )
     )
 
+    is_candidate = (
+        score >= MIN_SCORE
+        and technical_condition
+    )
+
+    if is_candidate:
+        signal = "KANDIDAT"
+
+    elif score >= MIN_SCORE:
+        signal = (
+            "SKOR MEMENUHI, "
+            "SYARAT TEKNIKAL BELUM LENGKAP"
+        )
+
+    else:
+        signal = "BELUM ADA SINYAL"
+
+    # Perkiraan stop loss dan target berbasis ATR
+    stop_loss = max(
+        0,
+        price - (1.5 * atr14)
+    )
+
+    target_1 = price + (2 * atr14)
+    target_2 = price + (3 * atr14)
+
     return {
-        "kode": ticker,
-        "harga": price,
-        "perubahan": change_pct,
-        "skor": score,
-        "sinyal": signal,
-        "rsi": r,
-        "volume_ratio": vr,
-        "entry_low": entry_low,
-        "entry_high": entry_high,
-        "stop": stop,
-        "target1": target1,
-        "target2": target2,
-        "target3": target3,
-        "catatan": "; ".join(notes) if notes else "Belum ada konfirmasi kuat",
-        "tanggal_data": str(df.index[-1].date())
+        "ticker": ticker,
+        "price": price,
+        "score": int(score),
+        "signal": signal,
+        "is_candidate": bool(is_candidate),
+        "rsi": rsi_now,
+        "volume_ratio": float(volume_ratio),
+        "ema9": ema9_now,
+        "ema21": ema21_now,
+        "ema50": ema50_now,
+        "breakout20": bool(breakout20),
+        "trend_up": bool(trend_up),
+        "volume_strong": bool(volume_strong),
+        "stop_loss": float(stop_loss),
+        "target_1": float(target_1),
+        "target_2": float(target_2),
+        "date": data.index[-1].strftime("%Y-%m-%d"),
     }
 
 
-def rupiah(value):
-    return "Rp{:,.0f}".format(value).replace(",", ".")
+# ============================================================
+# MENGIRIM PESAN TELEGRAM
+# ============================================================
+def send_telegram(message):
+    token = os.getenv(
+        "TELEGRAM_BOT_TOKEN", ""
+    ).strip()
 
-
-def send_telegram(token, chat_id, message):
-    response = requests.post(
-        f"https://api.telegram.org/bot{token}/sendMessage",
-        data={
-            "chat_id": chat_id,
-            "text": message
-        },
-        timeout=25
-    )
-
-    response.raise_for_status()
-
-    result = response.json()
-
-    if not result.get("ok"):
-        raise RuntimeError(str(result))
-
-    return True
-
-
-def main():
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    chat_id = os.getenv(
+        "TELEGRAM_CHAT_ID", ""
+    ).strip()
 
     if not token or not chat_id:
-        raise RuntimeError(
-            "TELEGRAM_BOT_TOKEN atau TELEGRAM_CHAT_ID belum diatur."
+        print(
+            "TELEGRAM TIDAK DIKIRIM: "
+            "TELEGRAM_BOT_TOKEN atau TELEGRAM_CHAT_ID "
+            "belum diatur."
+        )
+        return False
+
+    url = (
+        f"https://api.telegram.org/bot"
+        f"{token}/sendMessage"
+    )
+
+    try:
+        response = requests.post(
+            url,
+            json={
+                "chat_id": chat_id,
+                "text": message,
+                "disable_web_page_preview": True,
+            },
+            timeout=20,
         )
 
-    now = datetime.now(ZoneInfo("Asia/Jakarta"))
+        if response.ok:
+            payload = response.json()
+
+            if payload.get("ok") is True:
+                return True
+
+        print(
+            f"Telegram gagal: HTTP {response.status_code} "
+            f"- {response.text[:300]}"
+        )
+
+    except requests.RequestException as exc:
+        print(
+            f"Telegram gagal mengirim pesan: {exc}"
+        )
+
+    return False
+
+
+# ============================================================
+# FORMAT HARGA RUPIAH
+# ============================================================
+def format_rupiah(value):
+    return (
+        f"Rp{value:,.0f}"
+        .replace(",", ".")
+    )
+
+
+# ============================================================
+# FORMAT PESAN KANDIDAT
+# ============================================================
+def make_telegram_message(result):
+    breakout_text = (
+        "Ya"
+        if result["breakout20"]
+        else "Tidak"
+    )
+
+    return (
+        f"📈 KANDIDAT SAHAM BEI: "
+        f"{result['ticker']}\n"
+
+        f"Skor teknikal: "
+        f"{result['score']}/100\n"
+
+        f"Harga penutupan data harian: "
+        f"{format_rupiah(result['price'])}\n"
+
+        f"RSI(14): "
+        f"{result['rsi']:.1f}\n"
+
+        f"Rasio volume: "
+        f"{result['volume_ratio']:.2f}x\n"
+
+        f"Breakout 20 hari: "
+        f"{breakout_text}\n\n"
+
+        f"Perkiraan level teknikal:\n"
+
+        f"Stop loss indikatif: "
+        f"{format_rupiah(result['stop_loss'])}\n"
+
+        f"Target 1 indikatif: "
+        f"{format_rupiah(result['target_1'])}\n"
+
+        f"Target 2 indikatif: "
+        f"{format_rupiah(result['target_2'])}\n\n"
+
+        f"Tanggal candle: "
+        f"{result['date']}\n"
+
+        "Catatan: data harian Yahoo Finance "
+        "dapat terlambat atau tidak lengkap. "
+        "Level ini merupakan perkiraan analisis, "
+        "bukan jaminan profit atau instruksi "
+        "otomatis untuk membeli."
+    )
+
+
+# ============================================================
+# PROSES UTAMA
+# ============================================================
+def main():
+    now = datetime.now(
+        ZoneInfo(TIMEZONE)
+    )
+
     today = now.strftime("%Y-%m-%d")
 
     tickers = load_tickers()
     state = load_state()
 
-    print(f"Waktu Indonesia: {now}")
-    print(f"Jumlah ticker: {len(tickers)}")
-    print(f"Mode: {MODE}")
+    print("=" * 60)
+    print("BOT SCANNER SAHAM BEI")
+    print(
+        f"Waktu mulai WIB: "
+        f"{now:%Y-%m-%d %H:%M:%S}"
+    )
+    print(
+        f"Jumlah kode untuk dipindai: "
+        f"{len(tickers)}"
+    )
+    print(
+        f"Skor minimum kandidat: "
+        f"{MIN_SCORE}"
+    )
+    print(
+        f"Syarat volume kuat: rasio >= "
+        f"{MIN_VOLUME_RATIO:.1f}x"
+    )
+    print(
+        "Notifikasi: maksimal 1 kali "
+        "per saham per hari"
+    )
+    print("=" * 60)
 
-    results = []
-    failures = []
+    scanned = 0
+    failures = 0
+    candidates = 0
+    notifications_sent = 0
 
-    for i, ticker in enumerate(tickers, start=1):
-        print(f"[{i}/{len(tickers)}] {ticker}")
-
-        try:
-            result = analyze_stock(ticker)
-
-            if result is not None:
-                results.append(result)
-            else:
-                failures.append(ticker)
-
-        except Exception as exc:
-            failures.append(ticker)
-            print(f"Gagal {ticker}: {str(exc)[:150]}")
-
-        time.sleep(0.15)
-
-    eligible = [
-        row for row in results
-        if row["sinyal"] == "KANDIDAT"
-        and row["skor"] >= MIN_SCORE
-    ]
-
-    print(f"Berhasil dianalisis: {len(results)}")
-    print(f"Gagal/tidak tersedia: {len(failures)}")
-    print(f"Kandidat sinyal beli: {len(eligible)}")
-
-    sent_count = 0
-
-    for row in eligible:
-        ticker = row["kode"]
-
-        # Jangan mengirim ulang ticker yang sudah diberitahukan hari ini.
-        if state.get(ticker) == today:
-            print(f"Sudah dikirim hari ini: {ticker}")
-            continue
-
-        message = (
-            "📈 BOT AI SAHAM BEI 6.0\n"
-            "🔔 SINYAL KANDIDAT\n\n"
-            f"Saham: {ticker}\n"
-            f"Skor: {row['skor']}/100\n"
-            f"Harga terakhir: {rupiah(row['harga'])}\n"
-            f"Perubahan: {row['perubahan']:.2f}%\n"
-            f"RSI: {row['rsi']:.2f}\n"
-            f"Volume ratio: {row['volume_ratio']:.2f}\n\n"
-            f"Entry indikatif: {rupiah(row['entry_low'])}"
-            f" - {rupiah(row['entry_high'])}\n"
-            f"Stop loss: {rupiah(row['stop'])}\n"
-            f"Target 1: {rupiah(row['target1'])}\n"
-            f"Target 2: {rupiah(row['target2'])}\n"
-            f"Target 3: {rupiah(row['target3'])}\n\n"
-            f"Catatan: {row['catatan']}\n"
-            f"Tanggal data: {row['tanggal_data']}\n"
-            f"Waktu scan: {now.strftime('%d-%m-%Y %H:%M WIB')}\n\n"
-            "Data candle harian, bukan harga real-time. "
-            "Sinyal bukan jaminan keuntungan."
+    for index, ticker in enumerate(
+        tickers,
+        start=1
+    ):
+        print(
+            f"[{index}/{len(tickers)}] "
+            f"Memindai {ticker}...",
+            flush=True,
         )
 
+        data = fetch_history(ticker)
+
+        if data is None:
+            failures += 1
+            time.sleep(REQUEST_DELAY_SECONDS)
+            continue
+
         try:
-            send_telegram(token, chat_id, message)
-
-            # Simpan status setelah Telegram mengonfirmasi pengiriman.
-            state[ticker] = today
-            save_state(state)
-
-            sent_count += 1
-            print(f"Notifikasi terkirim: {ticker}")
+            result = analyze_stock(
+                ticker,
+                data
+            )
 
         except Exception as exc:
-            print(f"Telegram gagal untuk {ticker}: {str(exc)[:150]}")
+            failures += 1
+            print(
+                f"ERROR analisis {ticker}: {exc}"
+            )
+            time.sleep(REQUEST_DELAY_SECONDS)
+            continue
 
-    print(f"Notifikasi berhasil dikirim: {sent_count}")
-    print("Pemindaian selesai.")
+        scanned += 1
+
+        print(
+            f"  Harga="
+            f"{format_rupiah(result['price'])} | "
+            f"Skor={result['score']} | "
+            f"Sinyal={result['signal']} | "
+            f"RSI={result['rsi']:.1f} | "
+            f"Volume="
+            f"{result['volume_ratio']:.2f}x",
+            flush=True,
+        )
+
+        # Hanya kandidat yang memenuhi semua syarat
+        # yang dapat dikirim ke Telegram.
+        if result["is_candidate"]:
+            candidates += 1
+
+            # Periksa apakah saham sudah diberi
+            # notifikasi pada hari ini.
+            if state.get(ticker) == today:
+                print(
+                    f"  Telegram dilewati: {ticker} "
+                    "sudah mendapat notifikasi hari ini."
+                )
+
+            else:
+                message = make_telegram_message(
+                    result
+                )
+
+                if send_telegram(message):
+                    # Catat hanya jika Telegram
+                    # mengonfirmasi pesan berhasil dikirim.
+                    state[ticker] = today
+                    save_state(state)
+
+                    notifications_sent += 1
+
+                    print(
+                        f"  NOTIFIKASI TERKIRIM: "
+                        f"{ticker}"
+                    )
+
+                else:
+                    print(
+                        f"  NOTIFIKASI GAGAL: {ticker}; "
+                        "akan bisa dicoba lagi "
+                        "pada proses berikutnya."
+                    )
+
+        time.sleep(REQUEST_DELAY_SECONDS)
+
+    print("=" * 60)
+    print("RINGKASAN SCAN")
+    print(
+        f"Jumlah kode dalam daftar : "
+        f"{len(tickers)}"
+    )
+    print(
+        f"Berhasil dianalisis      : "
+        f"{scanned}"
+    )
+    print(
+        f"Gagal/tidak ada data     : "
+        f"{failures}"
+    )
+    print(
+        f"Kandidat skor >= {MIN_SCORE} "
+        "+ syarat teknikal: {candidates}"
+    )
+    print(
+        f"Notifikasi terkirim kali ini: "
+        f"{notifications_sent}"
+    )
+    print("=" * 60)
 
 
 if __name__ == "__main__":
