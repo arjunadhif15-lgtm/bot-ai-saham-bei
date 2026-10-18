@@ -3,7 +3,6 @@ name: Scan Otomatis Saham BEI
 on:
   schedule:
     - cron: "20 9 * * 1-5"
-
   workflow_dispatch:
 
 permissions:
@@ -30,18 +29,14 @@ jobs:
       - name: Pasang library
         run: python -m pip install -r requirements.txt
 
-      - name: Periksa file scanner
+      - name: Periksa lokasi dan file
         run: |
           echo "Direktori kerja:"
           pwd
           echo "Daftar file:"
           ls -la
-          echo "Memeriksa file yang diperlukan..."
-          test -f scanner.py
-          test -f app.py
-          test -f requirements.txt
-          test -f sent_notifications.json
-          echo "Semua file ditemukan."
+          echo "Pemeriksaan file:"
+          python -c "import os; files=['scanner.py','app.py','requirements.txt','sent_notifications.json']; [print(f + ': ' + str(os.path.isfile(f))) for f in files]"
 
       - name: Jalankan scan saham
         env:
