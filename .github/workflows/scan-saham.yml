@@ -3,6 +3,7 @@ name: Scan Otomatis Saham BEI
 on:
   schedule:
     - cron: "20 9 * * 1-5"
+
   workflow_dispatch:
 
 permissions:
@@ -20,6 +21,8 @@ jobs:
     steps:
       - name: Ambil kode repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: true
 
       - name: Siapkan Python
         uses: actions/setup-python@v5
@@ -27,30 +30,58 @@ jobs:
           python-version: "3.11"
 
       - name: Pasang library
-        run: python -m pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
 
       - name: Periksa lokasi dan file
         run: |
           echo "Direktori kerja:"
           pwd
+
           echo "Daftar file:"
           ls -la
-          echo "Pemeriksaan file:"
-          python -c "import os; files=['scanner.py','app.py','requirements.txt','sent_notifications.json']; [print(f + ': ' + str(os.path.isfile(f))) for f in files]"
+
+          echo "Memeriksa file yang diperlukan..."
+
+          test -f scanner.py || {
+            echo "ERROR: scanner.py tidak ditemukan!"
+            exit 1
+          }
+
+          test -f app.py || {
+            echo "ERROR: app.py tidak ditemukan!"
+            exit 1
+          }
+
+          test -f requirements.txt || {
+            echo "ERROR: requirements.txt tidak ditemukan!"
+            exit 1
+          }
+
+          if [ ! -f sent_notifications.json ]; then
+            echo "{}" > sent_notifications.json
+            echo "File status notifikasi dibuat."
+          fi
+
+          echo "Semua file ditemukan."
 
       - name: Jalankan scan saham
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python ./scanner.py
+        run: python -u scanner.py
 
       - name: Simpan catatan notifikasi harian
         if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           git add sent_notifications.json
+
           if ! git diff --cached --quiet; then
             git commit -m "Simpan status notifikasi saham"
           fi
+
           git push
