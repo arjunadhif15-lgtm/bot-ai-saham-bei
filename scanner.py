@@ -19,6 +19,8 @@ STATE_FILE = os.path.join(BASE_DIR, "sent_notifications.json")
 
 MIN_SCORE = 70
 MIN_VOLUME_RATIO = 1.2
+MAX_RSI_ENTRY = 70.0  # RSI di atas ini diberi label PANTAU DULU
+MAX_ABOVE_EMA9_PCT = 3.0  # Harga >3% di atas EMA9 diberi label PANTAU DULU
 MAX_TICKERS = None  # None = pindai semua saham di DEFAULT_TICKERS
 REQUEST_DELAY_SECONDS = 0.25
 YF_PERIOD = "1y"
@@ -251,6 +253,10 @@ def analyze_stock(ticker, data):
 
     volume_strong = volume_ratio >= MIN_VOLUME_RATIO
     price_above_ema21 = price > ema21_now
+    distance_above_ema9_pct = ((price / ema9_now) - 1) * 100 if ema9_now > 0 else 0.0
+    overheated_rsi = rsi_now > MAX_RSI_ENTRY
+    price_stretched = distance_above_ema9_pct > MAX_ABOVE_EMA9_PCT
+    watch_only = overheated_rsi or price_stretched
 
     # ATR 14 untuk perkiraan risiko
     previous_close = close.shift(1)
@@ -318,8 +324,15 @@ def analyze_stock(ticker, data):
         and technical_condition
     )
 
-    if is_candidate:
-        signal = "KANDIDAT"
+    if is_candidate and watch_only:
+        reasons = []
+        if overheated_rsi:
+            reasons.append(f"RSI tinggi ({rsi_now:.1f})")
+        if price_stretched:
+            reasons.append(f"harga {distance_above_ema9_pct:.1f}% di atas EMA9")
+        signal = "PANTAU DULU — " + "; ".join(reasons)
+    elif is_candidate:
+        signal = "KANDIDAT ENTRY"
 
     elif score >= MIN_SCORE:
         signal = (
@@ -342,7 +355,9 @@ def analyze_stock(ticker, data):
     target_1 = price + (2 * atr14)
     target_2 = price + (3 * atr14)
 
-    if breakout20:
+    if watch_only:
+        entry_status = "PANTAU DULU — jangan mengejar harga; tunggu kondisi lebih ideal"
+    elif breakout20:
         # Breakout terdeteksi: area entry indikatif di sekitar
         # harga penutupan sampai sedikit di atasnya.
         entry_low = price
@@ -377,6 +392,8 @@ def analyze_stock(ticker, data):
         "signal": signal,
         "is_candidate": bool(is_candidate),
         "rsi": rsi_now,
+        "distance_above_ema9_pct": float(distance_above_ema9_pct),
+        "watch_only": bool(watch_only),
         "volume_ratio": float(volume_ratio),
         "ema9": ema9_now,
         "ema21": ema21_now,
@@ -481,8 +498,10 @@ def make_telegram_message(result):
     else:
         entry_text = "Belum tersedia"
 
+    heading = "👀 PANTAU DULU — JANGAN MENGEJAR HARGA" if result.get("watch_only", False) else "📈 KANDIDAT ENTRY SAHAM BEI"
+
     return (
-        f"📈 KANDIDAT SAHAM BEI: "
+        f"{heading}: "
         f"{result['ticker']}\n"
 
         f"Skor teknikal: "
@@ -493,6 +512,9 @@ def make_telegram_message(result):
 
         f"RSI(14): "
         f"{result['rsi']:.1f}\n"
+
+        f"Jarak harga dari EMA9: "
+        f"{result.get('distance_above_ema9_pct', 0):.1f}%\n"
 
         f"Rasio volume: "
         f"{result['volume_ratio']:.2f}x\n"
@@ -524,7 +546,8 @@ def make_telegram_message(result):
         "tidak lengkap. Area entry, stop loss, "
         "dan target merupakan perkiraan teknikal, "
         "bukan jaminan profit atau instruksi "
-        "otomatis untuk membeli. Periksa harga "
+        "otomatis untuk membeli. Jika berstatus PANTAU DULU, "
+        "hindari mengejar harga dan tunggu evaluasi ulang. Periksa harga "
         "terkini sebelum melakukan transaksi."
     )
 
