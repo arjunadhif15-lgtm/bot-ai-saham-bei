@@ -371,15 +371,7 @@ def analyze_stock(ticker, data):
     else:
         signal = "PANTAU DULU" if watch_only else "BELUM ADA SINYAL"
 
-    # Kirim sinyal A-D jika kualitas skor memadai. Peringatan false breakout
-    # boleh dikirim mulai skor 50 agar tidak terlewat, tetap dibatasi 1x/saham/hari.
-    is_candidate = bool(
-        (not false_breakout and score >= MIN_SCORE and risk_filter_pass and (
-            breakout20 or prebreakout or accumulation or momentum_early or
-            (price_above_ema21 and volume_strong)
-        ))
-        or (false_breakout and score >= 50)
-    )
+    # Penentuan is_candidate dipindahkan ke bawah, setelah semua variabel dihitung.
 
     # Area entry indikatif. Hindari mengejar harga saat RSI/harga terlalu tinggi.
     entry_low = np.nan
@@ -433,6 +425,24 @@ def analyze_stock(ticker, data):
     capital_used = suggested_lot * price * 100
     estimated_trade_risk = suggested_lot * risk_per_share * 100
     risk_filter_pass = bool(risk_reward_ok and not false_breakout and not watch_only)
+
+    # Kandidat dihitung setelah momentum_early dan risk_filter_pass tersedia.
+    # Mode notifikasi berulang: kandidat dapat dikirim lagi pada setiap pemindaian.
+    is_candidate = bool(
+        (
+            not false_breakout
+            and score >= MIN_SCORE
+            and risk_filter_pass
+            and (
+                breakout20
+                or prebreakout
+                or accumulation
+                or momentum_early
+                or (price_above_ema21 and volume_strong)
+            )
+        )
+        or (false_breakout and score >= 50)
+    )
 
     return {
         "ticker": ticker,
@@ -739,8 +749,8 @@ def main():
         f"{MIN_VOLUME_RATIO:.1f}x"
     )
     print(
-        "Notifikasi: maksimal 1 kali "
-        "per saham per hari"
+        "Notifikasi: mode berulang aktif "
+        "(setiap pemindaian jika memenuhi syarat)"
     )
     print("=" * 60)
 
