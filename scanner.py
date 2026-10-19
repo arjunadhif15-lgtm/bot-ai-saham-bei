@@ -330,7 +330,10 @@ def analyze_stock(ticker, data):
     else:
         signal = "BELUM ADA SINYAL"
 
-    # Perkiraan stop loss dan target berbasis ATR
+    # ========================================================
+    # AREA ENTRY, STOP LOSS, DAN TARGET PROFIT
+    # Entry adalah perkiraan teknikal, bukan order otomatis.
+    # ========================================================
     stop_loss = max(
         0,
         price - (1.5 * atr14)
@@ -338,6 +341,34 @@ def analyze_stock(ticker, data):
 
     target_1 = price + (2 * atr14)
     target_2 = price + (3 * atr14)
+
+    if breakout20:
+        # Breakout terdeteksi: area entry indikatif di sekitar
+        # harga penutupan sampai sedikit di atasnya.
+        entry_low = price
+        entry_high = price + (0.25 * atr14)
+        entry_status = (
+            "Breakout terdeteksi; periksa harga pasar terkini"
+        )
+
+    elif price_above_ema21 and volume_strong:
+        # Belum breakout: perkiraan area pullback di sekitar
+        # EMA21 hingga harga penutupan.
+        entry_low = max(
+            ema21_now,
+            price - (0.5 * atr14)
+        )
+        entry_high = price
+        entry_status = (
+            "Belum breakout; tunggu konfirmasi dan pullback"
+        )
+
+    else:
+        entry_low = np.nan
+        entry_high = np.nan
+        entry_status = (
+            "Belum ada area entry yang memenuhi syarat"
+        )
 
     return {
         "ticker": ticker,
@@ -353,6 +384,9 @@ def analyze_stock(ticker, data):
         "breakout20": bool(breakout20),
         "trend_up": bool(trend_up),
         "volume_strong": bool(volume_strong),
+        "entry_low": float(entry_low),
+        "entry_high": float(entry_high),
+        "entry_status": entry_status,
         "stop_loss": float(stop_loss),
         "target_1": float(target_1),
         "target_2": float(target_2),
@@ -435,6 +469,18 @@ def make_telegram_message(result):
         else "Tidak"
     )
 
+    if (
+        np.isfinite(result["entry_low"])
+        and np.isfinite(result["entry_high"])
+    ):
+        entry_text = (
+            f"{format_rupiah(result['entry_low'])}"
+            f" - "
+            f"{format_rupiah(result['entry_high'])}"
+        )
+    else:
+        entry_text = "Belum tersedia"
+
     return (
         f"📈 KANDIDAT SAHAM BEI: "
         f"{result['ticker']}\n"
@@ -454,7 +500,12 @@ def make_telegram_message(result):
         f"Breakout 20 hari: "
         f"{breakout_text}\n\n"
 
-        f"Perkiraan level teknikal:\n"
+        f"🎯 RENCANA TRANSAKSI INDIKATIF\n"
+
+        f"Area entry: {entry_text}\n"
+
+        f"Status entry: "
+        f"{result['entry_status']}\n\n"
 
         f"Stop loss indikatif: "
         f"{format_rupiah(result['stop_loss'])}\n"
@@ -466,13 +517,15 @@ def make_telegram_message(result):
         f"{format_rupiah(result['target_2'])}\n\n"
 
         f"Tanggal candle: "
-        f"{result['date']}\n"
+        f"{result['date']}\n\n"
 
-        "Catatan: data harian Yahoo Finance "
-        "dapat terlambat atau tidak lengkap. "
-        "Level ini merupakan perkiraan analisis, "
+        "Catatan: harga berdasarkan data harian "
+        "Yahoo Finance dan dapat terlambat atau "
+        "tidak lengkap. Area entry, stop loss, "
+        "dan target merupakan perkiraan teknikal, "
         "bukan jaminan profit atau instruksi "
-        "otomatis untuk membeli."
+        "otomatis untuk membeli. Periksa harga "
+        "terkini sebelum melakukan transaksi."
     )
 
 
@@ -562,13 +615,9 @@ def main():
             flush=True,
         )
 
-        # Hanya kandidat yang memenuhi semua syarat
-        # yang dapat dikirim ke Telegram.
         if result["is_candidate"]:
             candidates += 1
 
-            # Periksa apakah saham sudah diberi
-            # notifikasi pada hari ini.
             if state.get(ticker) == today:
                 print(
                     f"  Telegram dilewati: {ticker} "
@@ -581,8 +630,6 @@ def main():
                 )
 
                 if send_telegram(message):
-                    # Catat hanya jika Telegram
-                    # mengonfirmasi pesan berhasil dikirim.
                     state[ticker] = today
                     save_state(state)
 
