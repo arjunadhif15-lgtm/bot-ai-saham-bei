@@ -173,94 +173,95 @@ def analyze_stock(ticker, data):
     low = data["Low"]
     volume = data["Volume"]
 
-    # EMA
-    ema9 = close.ewm(
-        span=9,
-        adjust=False
-    ).mean()
-
-    ema21 = close.ewm(
-        span=21,
-        adjust=False
-    ).mean()
-
-    ema50 = close.ewm(
-        span=50,
-        adjust=False
-    ).mean()
+    ema9 = close.ewm(span=9, adjust=False).mean()
+    ema21 = close.ewm(span=21, adjust=False).mean()
+    ema50 = close.ewm(span=50, adjust=False).mean()
 
     # RSI 14
     delta = close.diff()
-
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
-
-    avg_gain = gain.ewm(
-        alpha=1 / 14,
-        min_periods=14,
-        adjust=False
-    ).mean()
-
-    avg_loss = loss.ewm(
-        alpha=1 / 14,
-        min_periods=14,
-        adjust=False
-    ).mean()
-
+    avg_gain = gain.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
     rs = avg_gain / avg_loss.replace(0, np.nan)
+    rsi = (100 - (100 / (1 + rs))).fillna(50).clip(0, 100)
 
-    rsi = 100 - (100 / (1 + rs))
-    rsi = rsi.fillna(100).clip(0, 100)
-
-    # Rasio volume terhadap rata-rata 20 hari
+    # Volume hari ini dibanding rata-rata 20 hari.
     avg_volume20 = volume.rolling(20).mean()
+    avg_vol_now = float(avg_volume20.iloc[-1]) if pd.notna(avg_volume20.iloc[-1]) else 0.0
+    volume_ratio = float(volume.iloc[-1] / avg_vol_now) if avg_vol_now > 0 else 0.0
 
-    if (
-        pd.notna(avg_volume20.iloc[-1])
-        and avg_volume20.iloc[-1] > 0
-    ):
-        volume_ratio = (
-            volume.iloc[-1] / avg_volume20.iloc[-1]
-        )
-    else:
-        volume_ratio = 0
-
-    # Breakout terhadap tertinggi 20 candle sebelumnya
-    prior_high20 = (
-        high.shift(1).rolling(20).max().iloc[-1]
-    )
+    # Resistance 20 hari: tertinggi 20 candle SEBELUM candle terakhir.
+    prior_high20_series = high.shift(1).rolling(20).max()
+    resistance20 = float(prior_high20_series.iloc[-1]) if pd.notna(prior_high20_series.iloc[-1]) else np.nan
 
     price = float(close.iloc[-1])
+    previous_price = float(close.iloc[-2])
+    today_high = float(high.iloc[-1])
     ema9_now = float(ema9.iloc[-1])
     ema21_now = float(ema21.iloc[-1])
     ema50_now = float(ema50.iloc[-1])
     rsi_now = float(rsi.iloc[-1])
 
-    high20 = (
-        float(prior_high20)
-        if pd.notna(prior_high20)
-        else np.nan
-    )
-
-    # Kondisi teknikal
     trend_up = ema9_now > ema21_now
     trend_medium_up = ema21_now > ema50_now
+    price_above_ema21 = price > ema21_now
+    price_above_ema9 = price > ema9_now
+    distance_above_ema9_pct = ((price / ema9_now) - 1) * 100 if ema9_now > 0 else 0.0
 
-    breakout20 = (
-        pd.notna(high20)
-        and price > high20
+    breakout20 = bool(pd.notna(resistance20) and price > resistance20)
+    near_resistance_pct = (
+        ((resistance20 - price) / resistance20) * 100
+        if pd.notna(resistance20) and resistance20 > 0
+        else np.nan
+    )
+    # Calon breakout: harga belum menembus resistance, tetapi maksimal 3% di bawahnya.
+    prebreakout = bool(
+        pd.notna(near_resistance_pct)
+        and 0 <= near_resistance_pct <= 3.0
+        and price_above_ema21
+        and volume_ratio >= 0.8
+        and rsi_now >= 45
     )
 
     volume_strong = volume_ratio >= MIN_VOLUME_RATIO
-    price_above_ema21 = price > ema21_now
-    distance_above_ema9_pct = ((price / ema9_now) - 1) * 100 if ema9_now > 0 else 0.0
+
+    # Indikasi akumulasi (bukan bukti aktivitas bandar):
+    # harga relatif datar 10 sesi, volume naik, dan harga bertahan di atas EMA21.
+    change_10d_pct = (
+        ((price / float(close.iloc[-11])) - 1) * 100
+        if len(close) >= 11 and float(close.iloc[-11]) > 0
+        else 999.0
+    )
+    avg_volume5 = float(volume.rolling(5).mean().iloc[-1]) if pd.notna(volume.rolling(5).mean().iloc[-1]) else 0.0
+    accumulation = bool(
+        abs(change_10d_pct) <= 4.0
+        and avg_vol_now > 0
+        and avg_volume5 >= avg_vol_now * 1.15
+        and price_above_ema21
+        and not (rsi_now > 75)
+    )
+
+    # False breakout: candle sempat melewati resistance, tetapi ditutup kembali di bawahnya,
+    # atau salah satu dari 3 candle terakhir menembus resistance lalu harga kini kembali di bawah.
+    false_breakout = False
+    if pd.notna(resistance20) and resistance20 > 0:
+        rejected_today = today_high > resistance20 and price <= resistance20
+        recent_highs = high.iloc[-3:]
+        recent_closes = close.iloc[-3:]
+        recent_rejection = any(
+            float(h) > resistance20 and float(c) <= resistance20
+            for h, c in zip(recent_highs, recent_closes)
+        )
+        returned_below = previous_price > resistance20 and price <= resistance20
+        false_breakout = bool(rejected_today or recent_rejection or returned_below)
+
     overheated_rsi = rsi_now > MAX_RSI_ENTRY
     price_stretched = distance_above_ema9_pct > MAX_ABOVE_EMA9_PCT
     watch_only = overheated_rsi or price_stretched
 
-    # ATR 14 untuk perkiraan risiko
+    # ATR 14
     previous_close = close.shift(1)
-
     true_range = pd.concat(
         [
             high - low,
@@ -269,128 +270,90 @@ def analyze_stock(ticker, data):
         ],
         axis=1,
     ).max(axis=1)
+    atr_value = true_range.rolling(14).mean().iloc[-1]
+    atr14 = float(atr_value) if pd.notna(atr_value) and float(atr_value) > 0 else price * 0.03
 
-    atr14 = true_range.rolling(14).mean().iloc[-1]
-
-    if pd.notna(atr14):
-        atr14 = float(atr14)
-    else:
-        atr14 = price * 0.03
-
-    # ========================================================
-    # SKOR TEKNIKAL
-    # Maksimum skor: 100
-    # ========================================================
+    # Skor berbobot dengan maksimum tepat 100.
     score = 0
-
     if trend_up:
-        score += 20
-
-    if trend_medium_up:
         score += 15
-
+    if trend_medium_up:
+        score += 10
     if breakout20:
-        score += 25
-
+        score += 20
+    if prebreakout:
+        score += 15
     if volume_strong:
         score += 15
-
     if 50 <= rsi_now <= 65:
-        score += 15
-
-    elif 45 <= rsi_now < 50:
+        score += 10
+    elif 45 <= rsi_now < 50 or 65 < rsi_now <= 70:
         score += 5
+    if price_above_ema9:
+        score += 5
+    if accumulation:
+        score += 5
+    if breakout20 and volume_strong and trend_up and 45 <= rsi_now <= 70:
+        score += 5
+    score = min(100, int(score))
 
-    elif 65 < rsi_now <= 70:
-        score += 10
-
-    if price > ema9_now:
-        score += 10
-
-    # ========================================================
-    # SYARAT KANDIDAT PILIHAN A
-    # Skor >= 70 DAN memenuhi kondisi teknikal.
-    # ========================================================
-    technical_condition = (
-        breakout20
-        or (
-            price_above_ema21
-            and volume_strong
-        )
-    )
-
-    is_candidate = (
-        score >= MIN_SCORE
-        and technical_condition
-    )
-
-    if is_candidate and watch_only:
-        reasons = []
-        if overheated_rsi:
-            reasons.append(f"RSI tinggi ({rsi_now:.1f})")
-        if price_stretched:
-            reasons.append(f"harga {distance_above_ema9_pct:.1f}% di atas EMA9")
-        signal = "PANTAU DULU — " + "; ".join(reasons)
-    elif is_candidate:
+    # Kategori sinyal; false breakout diberi prioritas sebagai peringatan risiko.
+    if false_breakout:
+        signal = "WASPADA FALSE BREAKOUT"
+    elif breakout20 and volume_strong and trend_up:
+        signal = "BREAKOUT TERKONFIRMASI"
+    elif prebreakout:
+        signal = "CALON BREAKOUT"
+    elif accumulation:
+        signal = "INDIKASI AKUMULASI"
+    elif score >= MIN_SCORE and price_above_ema21 and volume_strong:
         signal = "KANDIDAT ENTRY"
-
-    elif score >= MIN_SCORE:
-        signal = (
-            "SKOR MEMENUHI, "
-            "SYARAT TEKNIKAL BELUM LENGKAP"
-        )
-
     else:
-        signal = "BELUM ADA SINYAL"
+        signal = "PANTAU DULU" if watch_only else "BELUM ADA SINYAL"
 
-    # ========================================================
-    # AREA ENTRY, STOP LOSS, DAN TARGET PROFIT
-    # Entry adalah perkiraan teknikal, bukan order otomatis.
-    # ========================================================
-    stop_loss = max(
-        0,
-        price - (1.5 * atr14)
+    # Kirim sinyal A-D jika kualitas skor memadai. Peringatan false breakout
+    # boleh dikirim mulai skor 50 agar tidak terlewat, tetap dibatasi 1x/saham/hari.
+    is_candidate = bool(
+        (not false_breakout and score >= MIN_SCORE and (
+            breakout20 or prebreakout or accumulation or
+            (price_above_ema21 and volume_strong)
+        ))
+        or (false_breakout and score >= 50)
     )
 
+    # Area entry indikatif. Hindari mengejar harga saat RSI/harga terlalu tinggi.
+    entry_low = np.nan
+    entry_high = np.nan
+    if not watch_only and not false_breakout:
+        if breakout20:
+            entry_low = price
+            entry_high = price + (0.25 * atr14)
+            entry_status = "Breakout terdeteksi; verifikasi harga dan volume terkini"
+        elif prebreakout:
+            entry_low = max(ema21_now, price - (0.5 * atr14))
+            entry_high = min(resistance20, price + (0.25 * atr14)) if pd.notna(resistance20) else price
+            entry_status = "Calon breakout; tunggu konfirmasi tembus resistance"
+        elif price_above_ema21 and volume_strong:
+            entry_low = max(ema21_now, price - (0.5 * atr14))
+            entry_high = price
+            entry_status = "Belum breakout; tunggu konfirmasi dan pullback"
+        else:
+            entry_status = "Belum ada area entry yang memenuhi syarat"
+    elif false_breakout:
+        entry_status = "Hindari entry dahulu; harga menunjukkan risiko false breakout"
+    else:
+        entry_status = "PANTAU DULU — jangan mengejar harga; tunggu kondisi lebih ideal"
+
+    stop_loss = max(0.0, price - (1.5 * atr14))
     target_1 = price + (2 * atr14)
     target_2 = price + (3 * atr14)
-
-    if watch_only:
-        entry_status = "PANTAU DULU — jangan mengejar harga; tunggu kondisi lebih ideal"
-    elif breakout20:
-        # Breakout terdeteksi: area entry indikatif di sekitar
-        # harga penutupan sampai sedikit di atasnya.
-        entry_low = price
-        entry_high = price + (0.25 * atr14)
-        entry_status = (
-            "Breakout terdeteksi; periksa harga pasar terkini"
-        )
-
-    elif price_above_ema21 and volume_strong:
-        # Belum breakout: perkiraan area pullback di sekitar
-        # EMA21 hingga harga penutupan.
-        entry_low = max(
-            ema21_now,
-            price - (0.5 * atr14)
-        )
-        entry_high = price
-        entry_status = (
-            "Belum breakout; tunggu konfirmasi dan pullback"
-        )
-
-    else:
-        entry_low = np.nan
-        entry_high = np.nan
-        entry_status = (
-            "Belum ada area entry yang memenuhi syarat"
-        )
 
     return {
         "ticker": ticker,
         "price": price,
-        "score": int(score),
+        "score": score,
         "signal": signal,
-        "is_candidate": bool(is_candidate),
+        "is_candidate": is_candidate,
         "rsi": rsi_now,
         "distance_above_ema9_pct": float(distance_above_ema9_pct),
         "watch_only": bool(watch_only),
@@ -399,6 +362,12 @@ def analyze_stock(ticker, data):
         "ema21": ema21_now,
         "ema50": ema50_now,
         "breakout20": bool(breakout20),
+        "prebreakout": bool(prebreakout),
+        "accumulation": bool(accumulation),
+        "false_breakout": bool(false_breakout),
+        "resistance20": float(resistance20) if pd.notna(resistance20) else np.nan,
+        "distance_to_resistance_pct": float(near_resistance_pct) if pd.notna(near_resistance_pct) else np.nan,
+        "change_10d_pct": float(change_10d_pct),
         "trend_up": bool(trend_up),
         "volume_strong": bool(volume_strong),
         "entry_low": float(entry_low),
@@ -498,11 +467,10 @@ def make_telegram_message(result):
     else:
         entry_text = "Belum tersedia"
 
-    heading = "👀 PANTAU DULU — JANGAN MENGEJAR HARGA" if result.get("watch_only", False) else "📈 KANDIDAT ENTRY SAHAM BEI"
+    heading = f"🔎 {result['signal']} — {result['ticker']}"
 
     return (
-        f"{heading}: "
-        f"{result['ticker']}\n"
+        f"{heading}\n"
 
         f"Skor teknikal: "
         f"{result['score']}/100\n"
@@ -520,7 +488,16 @@ def make_telegram_message(result):
         f"{result['volume_ratio']:.2f}x\n"
 
         f"Breakout 20 hari: "
-        f"{breakout_text}\n\n"
+        f"{breakout_text}\n"
+
+        f"Jarak ke resistance: "
+        f"{result.get('distance_to_resistance_pct', float('nan')):.1f}%\n"
+
+        f"Indikasi akumulasi: "
+        f"{'Ya' if result.get('accumulation', False) else 'Tidak'}\n"
+
+        f"Risiko false breakout: "
+        f"{'TERDETEKSI' if result.get('false_breakout', False) else 'Tidak terdeteksi'}\n\n"
 
         f"🎯 RENCANA TRANSAKSI INDIKATIF\n"
 
