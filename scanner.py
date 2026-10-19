@@ -27,6 +27,15 @@ YF_PERIOD = "1y"
 YF_INTERVAL = "1d"
 TIMEZONE = "Asia/Jakarta"
 
+# Fitur tambahan F-M
+TOP_N = 10
+MAX_RISK_PER_TRADE_PCT = 1.0
+MIN_REWARD_RISK = 1.5
+DEFAULT_CAPITAL = 20_000_000
+RUN_BACKTEST = os.getenv("RUN_BACKTEST", "0").strip() == "1"
+BACKTEST_TICKERS_LIMIT = 30
+BACKTEST_FORWARD_DAYS = 5
+
 
 # ============================================================
 # MEMBACA DAFTAR SAHAM DARI app.py
@@ -74,7 +83,7 @@ def load_tickers():
 
 # ============================================================
 # STATUS NOTIFIKASI
-# MAKSIMAL 1 NOTIFIKASI PER SAHAM PER HARI
+# MODE UJI: NOTIFIKASI BOLEH BERULANG SETIAP KALI SCANNER DIJALANKAN
 # ============================================================
 def load_state():
     if not os.path.isfile(STATE_FILE):
@@ -365,8 +374,8 @@ def analyze_stock(ticker, data):
     # Kirim sinyal A-D jika kualitas skor memadai. Peringatan false breakout
     # boleh dikirim mulai skor 50 agar tidak terlewat, tetap dibatasi 1x/saham/hari.
     is_candidate = bool(
-        (not false_breakout and score >= MIN_SCORE and (
-            breakout20 or prebreakout or accumulation or
+        (not false_breakout and score >= MIN_SCORE and risk_filter_pass and (
+            breakout20 or prebreakout or accumulation or momentum_early or
             (price_above_ema21 and volume_strong)
         ))
         or (false_breakout and score >= 50)
@@ -399,6 +408,32 @@ def analyze_stock(ticker, data):
     target_1 = price + (2 * atr14)
     target_2 = price + (3 * atr14)
 
+    # G: momentum awal sebelum breakout
+    momentum_5d_pct = (price / float(close.iloc[-6]) - 1) * 100 if len(close) >= 6 and float(close.iloc[-6]) > 0 else 0.0
+    momentum_10d_pct = (price / float(close.iloc[-11]) - 1) * 100 if len(close) >= 11 and float(close.iloc[-11]) > 0 else 0.0
+    momentum_early = bool(not breakout20 and not false_breakout and price_above_ema21 and trend_up and momentum_5d_pct > 0 and pd.notna(near_resistance_pct) and 0 <= near_resistance_pct <= 5.0 and volume_ratio >= 0.8 and 45 <= rsi_now <= 70)
+    momentum_score = 0
+    if momentum_5d_pct > 0: momentum_score += 25
+    if momentum_10d_pct > 0: momentum_score += 15
+    if trend_up: momentum_score += 20
+    if price_above_ema21: momentum_score += 15
+    if volume_ratio >= 1.0: momentum_score += 10
+    if pd.notna(near_resistance_pct) and 0 <= near_resistance_pct <= 5: momentum_score += 15
+    momentum_score = min(100, momentum_score)
+
+    # H/K: risk/reward dan ukuran posisi simulasi berbasis modal Rp20 juta.
+    risk_per_share = max(price - stop_loss, 0.0)
+    reward_per_share = max(target_1 - price, 0.0)
+    reward_risk = reward_per_share / risk_per_share if risk_per_share > 0 else 0.0
+    risk_reward_ok = bool(reward_risk >= MIN_REWARD_RISK)
+    risk_budget = DEFAULT_CAPITAL * MAX_RISK_PER_TRADE_PCT / 100
+    risk_lot = int(risk_budget // (risk_per_share * 100)) if risk_per_share > 0 else 0
+    capital_lot = int(DEFAULT_CAPITAL // (price * 100)) if price > 0 else 0
+    suggested_lot = max(0, min(risk_lot, capital_lot))
+    capital_used = suggested_lot * price * 100
+    estimated_trade_risk = suggested_lot * risk_per_share * 100
+    risk_filter_pass = bool(risk_reward_ok and not false_breakout and not watch_only)
+
     return {
         "ticker": ticker,
         "price": price,
@@ -421,6 +456,16 @@ def analyze_stock(ticker, data):
         "resistance20": float(resistance20) if pd.notna(resistance20) else np.nan,
         "distance_to_resistance_pct": float(near_resistance_pct) if pd.notna(near_resistance_pct) else np.nan,
         "change_10d_pct": float(change_10d_pct),
+        "momentum_5d_pct": float(momentum_5d_pct),
+        "momentum_10d_pct": float(momentum_10d_pct),
+        "momentum_early": bool(momentum_early),
+        "momentum_score": int(momentum_score),
+        "reward_risk": float(reward_risk),
+        "risk_reward_ok": bool(risk_reward_ok),
+        "risk_filter_pass": bool(risk_filter_pass),
+        "suggested_lot": int(suggested_lot),
+        "capital_used": float(capital_used),
+        "estimated_trade_risk": float(estimated_trade_risk),
         "trend_up": bool(trend_up),
         "volume_strong": bool(volume_strong),
         "entry_low": float(entry_low),
@@ -528,6 +573,9 @@ def make_telegram_message(result):
         f"Skor teknikal: "
         f"{result['score']}/100\n"
 
+        f"Skor momentum awal: {result.get('momentum_score', 0)}/100\n"
+        f"Skor akumulasi: {result.get('accumulation_score', 0)}/100 ({result.get('accumulation_strength', 'LEMAH')})\n"
+
         f"Harga penutupan data harian: "
         f"{format_rupiah(result['price'])}\n"
 
@@ -573,7 +621,11 @@ def make_telegram_message(result):
         f"{format_rupiah(result['target_1'])}\n"
 
         f"Target 2 indikatif: "
-        f"{format_rupiah(result['target_2'])}\n\n"
+        f"{format_rupiah(result['target_2'])}\n"
+        f"Reward/risk ke Target 1: {result.get('reward_risk', 0):.2f}x\n"
+        f"Lot simulasi (modal Rp{DEFAULT_CAPITAL:,.0f}, risiko max {MAX_RISK_PER_TRADE_PCT:.1f}%): {result.get('suggested_lot', 0)} lot\n"
+        f"Perkiraan modal terpakai: {format_rupiah(result.get('capital_used', 0))}\n"
+        f"Estimasi risiko ke stop loss: {format_rupiah(result.get('estimated_trade_risk', 0))}\n\n"
 
         f"Tanggal candle: "
         f"{result['date']}\n\n"
@@ -587,6 +639,72 @@ def make_telegram_message(result):
         "hindari mengejar harga dan tunggu evaluasi ulang. Periksa harga "
         "terkini sebelum melakukan transaksi."
     )
+
+
+# ============================================================
+# J: BACKTESTING HISTORIS SEDERHANA
+# ============================================================
+def run_backtest(tickers):
+    print("\n" + "=" * 60)
+    print("BACKTESTING HISTORIS SEDERHANA")
+    print("Simulasi kasar: belum memasukkan biaya transaksi/slippage.")
+    tested = wins = losses = skipped = 0
+    returns = []
+    sample = tickers[:BACKTEST_TICKERS_LIMIT]
+    for idx, ticker in enumerate(sample, start=1):
+        print(f"[BT {idx}/{len(sample)}] {ticker}", flush=True)
+        data = fetch_history(ticker)
+        if data is None or len(data) < 100:
+            skipped += 1
+            time.sleep(REQUEST_DELAY_SECONDS)
+            continue
+        start_i = max(60, len(data) - 80)
+        for i in range(start_i, len(data) - BACKTEST_FORWARD_DAYS):
+            hist = data.iloc[:i + 1]
+            try:
+                res = analyze_stock(ticker, hist)
+            except Exception:
+                continue
+            eligible = res["score"] >= MIN_SCORE and res["risk_filter_pass"] and not res["false_breakout"] and (res["breakout20"] or res["prebreakout"] or res["accumulation"] or res["momentum_early"])
+            if not eligible:
+                continue
+            entry = float(hist["Close"].iloc[-1])
+            future = data.iloc[i + 1:i + 1 + BACKTEST_FORWARD_DAYS]
+            if future.empty or entry <= 0:
+                continue
+            pct = (float(future["Close"].iloc[-1]) / entry - 1) * 100
+            returns.append(pct)
+            tested += 1
+            if pct > 0: wins += 1
+            else: losses += 1
+        time.sleep(REQUEST_DELAY_SECONDS)
+    print("-" * 60)
+    print(f"Saham diperiksa       : {len(sample)}")
+    print(f"Saham dilewati        : {skipped}")
+    print(f"Sinyal historis diuji : {tested}")
+    print(f"Hasil positif         : {wins}")
+    print(f"Hasil nol/negatif     : {losses}")
+    print(f"Win rate sederhana    : {wins / tested * 100 if tested else 0:.1f}%")
+    print(f"Rata-rata perubahan   : {float(np.mean(returns)) if returns else 0:.2f}%")
+    print("Catatan: belum memodelkan urutan stop loss/target intrahari.")
+    print("=" * 60)
+
+
+def print_top_lists(results):
+    if not results:
+        print("Belum ada hasil yang bisa dirangking.")
+        return
+    ranked = sorted(results, key=lambda r: (r.get("score", 0), r.get("momentum_score", 0), r.get("accumulation_score", 0)), reverse=True)
+    print("\n" + "=" * 60)
+    print(f"TOP {min(TOP_N, len(ranked))} SAHAM BERDASARKAN SKOR")
+    print("Ticker | Skor | Momentum | Akumulasi | RSI | Volume | Sinyal")
+    for r in ranked[:TOP_N]:
+        print(f"{r['ticker']} | {r['score']} | {r.get('momentum_score', 0)} | {r.get('accumulation_score', 0)} | {r['rsi']:.1f} | {r['volume_ratio']:.2f}x | {r['signal']}")
+    momentum = sorted([r for r in results if r.get("momentum_early")], key=lambda r: (r.get("momentum_score", 0), r.get("score", 0)), reverse=True)
+    accum = sorted([r for r in results if r.get("accumulation_score", 0) >= 55], key=lambda r: (r.get("accumulation_score", 0), r.get("score", 0)), reverse=True)
+    print("\nMOMENTUM AWAL: " + (", ".join(r["ticker"] for r in momentum[:10]) or "Tidak ada"))
+    print("INDIKASI AKUMULASI: " + (", ".join(r["ticker"] for r in accum[:10]) or "Tidak ada"))
+    print("=" * 60)
 
 
 # ============================================================
@@ -630,6 +748,7 @@ def main():
     failures = 0
     candidates = 0
     notifications_sent = 0
+    all_results = []
 
     for index, ticker in enumerate(
         tickers,
@@ -663,6 +782,7 @@ def main():
             continue
 
         scanned += 1
+        all_results.append(result)
 
         print(
             f"  Harga="
@@ -671,41 +791,32 @@ def main():
             f"Sinyal={result['signal']} | "
             f"RSI={result['rsi']:.1f} | "
             f"Volume={result['volume_ratio']:.2f}x | "
-            f"Akumulasi={result.get('accumulation_score', 0)}/100",
+            f"Akumulasi={result.get('accumulation_score', 0)}/100 | "
+            f"Momentum={result.get('momentum_score', 0)}/100 | "
+            f"R/R={result.get('reward_risk', 0):.2f}x",
             flush=True,
         )
 
         if result["is_candidate"]:
             candidates += 1
 
-            if state.get(ticker) == today:
+            # MODE UJI: tidak memeriksa status notifikasi harian.
+            # Saham yang memenuhi syarat dapat mengirim notifikasi lagi
+            # pada setiap pemindaian/workflow berikutnya.
+            message = make_telegram_message(result)
+
+            if send_telegram(message):
+                notifications_sent += 1
                 print(
-                    f"  Telegram dilewati: {ticker} "
-                    "sudah mendapat notifikasi hari ini."
+                    f"  NOTIFIKASI TERKIRIM: {ticker} "
+                    "(mode uji: notifikasi berulang aktif)"
                 )
-
             else:
-                message = make_telegram_message(
-                    result
+                print(
+                    f"  NOTIFIKASI GAGAL: {ticker}; "
+                    "akan bisa dicoba lagi "
+                    "pada proses berikutnya."
                 )
-
-                if send_telegram(message):
-                    state[ticker] = today
-                    save_state(state)
-
-                    notifications_sent += 1
-
-                    print(
-                        f"  NOTIFIKASI TERKIRIM: "
-                        f"{ticker}"
-                    )
-
-                else:
-                    print(
-                        f"  NOTIFIKASI GAGAL: {ticker}; "
-                        "akan bisa dicoba lagi "
-                        "pada proses berikutnya."
-                    )
 
         time.sleep(REQUEST_DELAY_SECONDS)
 
@@ -732,6 +843,9 @@ def main():
         f"{notifications_sent}"
     )
     print("=" * 60)
+    print_top_lists(all_results)
+    if RUN_BACKTEST:
+        run_backtest(tickers)
 
 
 if __name__ == "__main__":
