@@ -242,6 +242,57 @@ def analyze_stock(ticker, data):
         and not (rsi_now > 75)
     )
 
+    # Skor indikasi akumulasi 0-100; ini hanya proksi harga/volume,
+    # bukan bukti bahwa bandar atau investor tertentu sedang membeli.
+    accumulation_score = 0
+
+    # Stabilitas harga 10 sesi: maksimal 25 poin.
+    if abs(change_10d_pct) <= 2.0:
+        accumulation_score += 25
+    elif abs(change_10d_pct) <= 4.0:
+        accumulation_score += 18
+    elif abs(change_10d_pct) <= 6.0:
+        accumulation_score += 8
+
+    # Volume rata-rata 5 sesi dibanding rata-rata 20 sesi: maksimal 25.
+    volume_lift = avg_volume5 / avg_vol_now if avg_vol_now > 0 else 0.0
+    if volume_lift >= 1.5:
+        accumulation_score += 25
+    elif volume_lift >= 1.25:
+        accumulation_score += 20
+    elif volume_lift >= 1.10:
+        accumulation_score += 12
+    elif volume_lift >= 1.0:
+        accumulation_score += 5
+
+    # Posisi harga relatif terhadap EMA21: maksimal 20 poin.
+    if price_above_ema21:
+        accumulation_score += 20
+    elif price >= ema21_now * 0.98:
+        accumulation_score += 10
+
+    # Rasio sesi yang tidak ditutup turun dalam 9 perubahan terakhir: maksimal 15.
+    recent_change = close.iloc[-10:].diff().dropna()
+    if len(recent_change) > 0:
+        non_down_ratio = float((recent_change >= 0).sum()) / len(recent_change)
+        if non_down_ratio >= 0.65:
+            accumulation_score += 15
+        elif non_down_ratio >= 0.50:
+            accumulation_score += 8
+
+    # Konfirmasi tren jangka pendek: maksimal 15 poin.
+    if trend_up and price_above_ema9:
+        accumulation_score += 15
+    elif price_above_ema9:
+        accumulation_score += 8
+
+    accumulation_score = min(100, int(accumulation_score))
+    accumulation_strength = (
+        "KUAT" if accumulation_score >= 75
+        else "SEDANG" if accumulation_score >= 55
+        else "LEMAH"
+    )
+
     # False breakout: candle sempat melewati resistance, tetapi ditutup kembali di bawahnya,
     # atau salah satu dari 3 candle terakhir menembus resistance lalu harga kini kembali di bawah.
     false_breakout = False
@@ -364,6 +415,8 @@ def analyze_stock(ticker, data):
         "breakout20": bool(breakout20),
         "prebreakout": bool(prebreakout),
         "accumulation": bool(accumulation),
+        "accumulation_score": int(accumulation_score),
+        "accumulation_strength": accumulation_strength,
         "false_breakout": bool(false_breakout),
         "resistance20": float(resistance20) if pd.notna(resistance20) else np.nan,
         "distance_to_resistance_pct": float(near_resistance_pct) if pd.notna(near_resistance_pct) else np.nan,
@@ -494,7 +547,14 @@ def make_telegram_message(result):
         f"{result.get('distance_to_resistance_pct', float('nan')):.1f}%\n"
 
         f"Indikasi akumulasi: "
-        f"{'Ya' if result.get('accumulation', False) else 'Tidak'}\n"
+        f"{'Ya' if result.get('accumulation', False) else 'Belum kuat'}\\n"
+
+        f"Skor indikasi akumulasi: "
+        f"{result.get('accumulation_score', 0)}/100 "
+        f"({result.get('accumulation_strength', 'LEMAH')})\\n"
+
+        f"Perubahan harga 10 sesi: "
+        f"{result.get('change_10d_pct', 0):.2f}%\\n"
 
         f"Risiko false breakout: "
         f"{'TERDETEKSI' if result.get('false_breakout', False) else 'Tidak terdeteksi'}\n\n"
@@ -610,8 +670,8 @@ def main():
             f"Skor={result['score']} | "
             f"Sinyal={result['signal']} | "
             f"RSI={result['rsi']:.1f} | "
-            f"Volume="
-            f"{result['volume_ratio']:.2f}x",
+            f"Volume={result['volume_ratio']:.2f}x | "
+            f"Akumulasi={result.get('accumulation_score', 0)}/100",
             flush=True,
         )
 
