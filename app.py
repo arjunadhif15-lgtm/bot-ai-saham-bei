@@ -663,7 +663,7 @@ with st.sidebar:
     max_tickers = st.slider(
         "Maksimum saham",
         min_value=20,
-        max_value=300,
+        max_value=500,
         value=100,
         step=10
     )
