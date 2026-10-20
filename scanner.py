@@ -397,7 +397,7 @@ def analyze_stock(ticker, data):
         entry_status = "PANTAU DULU — jangan mengejar harga; tunggu kondisi lebih ideal"
 
     stop_loss = max(0.0, price - (1.5 * atr14))
-    target_1 = price + (2 * atr14)
+    target_1 = price + (2.3 * atr14)
     target_2 = price + (3 * atr14)
 
     # G: momentum awal sebelum breakout
