@@ -846,7 +846,7 @@ def main():
     )
     print(
         f"Kandidat skor >= {MIN_SCORE} "
-        "+ syarat teknikal: {candidates}"
+        f"+ syarat teknikal: {candidates}"
     )
     print(
         f"Notifikasi terkirim kali ini: "
