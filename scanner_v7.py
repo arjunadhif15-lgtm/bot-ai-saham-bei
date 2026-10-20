@@ -51,6 +51,45 @@ def _normalize_tickers(raw):
     return tickers
 
 
+
+def _safe_ticker_value(node):
+    """Evaluasi format ticker umum tanpa menjalankan kode dari app.py."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        values = [_safe_ticker_value(item) for item in node.elts]
+        if isinstance(node, ast.Tuple):
+            return tuple(values)
+        if isinstance(node, ast.Set):
+            return set(values)
+        return values
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _safe_ticker_value(node.left)
+        right = _safe_ticker_value(node.right)
+        if isinstance(left, str) and isinstance(right, str):
+            return left + right
+        if isinstance(left, list) and isinstance(right, list):
+            return left + right
+    if isinstance(node, ast.Call):
+        # Mendukung pola: "BBCA,BBRI,...".split(",")
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "split":
+            value = _safe_ticker_value(node.func.value)
+            args = [_safe_ticker_value(arg) for arg in node.args]
+            if isinstance(value, str) and len(args) <= 2:
+                return value.split(*args)
+        # Mendukung list([...]), tuple([...]), sorted([...]) dan set([...])
+        if isinstance(node.func, ast.Name) and node.func.id in {"list", "tuple", "set", "sorted"}:
+            if len(node.args) == 1 and not node.keywords:
+                value = _safe_ticker_value(node.args[0])
+                if node.func.id == "list":
+                    return list(value)
+                if node.func.id == "tuple":
+                    return tuple(value)
+                if node.func.id == "set":
+                    return set(value)
+                return sorted(value)
+    raise ValueError("Ekspresi DEFAULT_TICKERS tidak didukung")
+
 def load_tickers():
     """Baca assignment DEFAULT_TICKERS dari app.py tanpa mengimpor Streamlit."""
     if not os.path.isfile(APP_FILE):
@@ -77,10 +116,11 @@ def load_tickers():
             continue
 
         try:
-            raw = ast.literal_eval(node.value)
-        except (ValueError, TypeError) as error:
+            raw = _safe_ticker_value(node.value)
+        except (ValueError, TypeError, SyntaxError) as error:
             raise ValueError(
-                "DEFAULT_TICKERS harus berupa string/list literal agar bisa dibaca aman."
+                "Format DEFAULT_TICKERS di app.py belum didukung. Gunakan daftar string, "
+                "string dipisahkan koma, atau string dengan .split(',')."
             ) from error
 
         tickers = _normalize_tickers(raw)
