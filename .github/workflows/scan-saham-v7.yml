@@ -1,0 +1,50 @@
+name: Scan Otomatis Saham BEI V7
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: scan-saham-bei-v7
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Ambil kode repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Siapkan Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Pasang library
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Periksa file V7
+        run: |
+          test -f scanner_v7.py || {
+            echo "ERROR: scanner_v7.py tidak ditemukan"
+            exit 1
+          }
+          test -f app.py || {
+            echo "ERROR: app.py tidak ditemukan"
+            exit 1
+          }
+          echo "File V7 dan app.py ditemukan."
+
+      - name: Jalankan scanner V7
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -u scanner_v7.py
