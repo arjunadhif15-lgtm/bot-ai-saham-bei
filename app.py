@@ -721,14 +721,24 @@ with st.sidebar:
 
     st.subheader("🔔 Telegram")
 
-    telegram_token = st.text_input(
-        "Bot token",
-        type="password"
-    )
+    telegram_token_default = st.secrets.get(
+    "TELEGRAM_BOT_TOKEN", ""
+)
 
-    telegram_chat_id = st.text_input(
-        "Chat ID"
-    )
+telegram_chat_id_default = st.secrets.get(
+    "TELEGRAM_CHAT_ID", ""
+)
+
+telegram_token = st.text_input(
+    "Bot Token",
+    value=telegram_token_default,
+    type="password"
+)
+
+telegram_chat_id = st.text_input(
+    "Chat ID",
+    value=telegram_chat_id_default
+)
 
     telegram_min_score = st.slider(
         "Skor minimum notifikasi",
