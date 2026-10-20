@@ -740,14 +740,13 @@ telegram_chat_id = st.text_input(
     value=telegram_chat_id_default
 )
 
-    telegram_min_score = st.slider(
-        "Skor minimum notifikasi",
-        min_value=40,
-        max_value=100,
-        value=70,
-        step=5
-    )
-
+telegram_min_score = st.slider(
+    "Skor minimum notifikasi",
+    min_value=40,
+    max_value=100,
+    value=70,
+    step=5
+)
 
 tickers = get_tickers(
     uploaded_file,
