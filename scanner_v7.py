@@ -37,9 +37,9 @@ DEFAULT_TICKERS = [
 def load_tickers():
     """Membaca daftar saham dari aplikasi jika tersedia."""
     try:
-        import aplikasi
+        import app
         raw = getattr(
-            aplikasi, "DEFAULT_TICKERS", DEFAULT_TICKERS
+            app, "DEFAULT_TICKERS", DEFAULT_TICKERS
         )
     except Exception:
         raw = DEFAULT_TICKERS
