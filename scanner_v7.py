@@ -18,6 +18,7 @@ APP_FILE = os.path.join(BASE_DIR, "app.py")
 STATE_FILE = os.path.join(BASE_DIR, "sent_notifications_v7.json")
 TIMEZONE = ZoneInfo("Asia/Jakarta")
 MIN_SCORE = 70
+MIN_BREAKOUT_SCORE = 75
 MIN_VOLUME_RATIO = 1.2
 MIN_REWARD_RISK = 1.5
 TOP_N = 10
@@ -252,13 +253,13 @@ def analyze_stock(ticker, df):
     distance = (resistance_now - price) / price * 100 if pd.notna(resistance_now) and price > 0 else np.nan
     prebreakout = (
         not breakout and not false_breakout and pd.notna(distance) and 0 <= distance <= 3
-        and price > ema21_now and volume_ratio >= 0.8 and rsi_now >= 45
+        and price > ema21_now and volume_ratio >= MIN_VOLUME_RATIO and rsi_now >= 50
     )
     momentum_5d = (price / float(close.iloc[-6]) - 1) * 100 if len(close) >= 6 and float(close.iloc[-6]) > 0 else 0.0
     momentum = (
         not breakout and not false_breakout and trend_up and momentum_5d > 0
-        and pd.notna(distance) and 0 <= distance <= 5 and volume_ratio >= 0.8
-        and 45 <= rsi_now <= 70
+        and pd.notna(distance) and 0 <= distance <= 5 and volume_ratio >= MIN_VOLUME_RATIO
+        and 50 <= rsi_now <= 70
     )
 
     # Indikasi akumulasi teknikal saja; bukan data broker/bukti aktivitas bandar.
@@ -297,9 +298,10 @@ def analyze_stock(ticker, df):
 
     if false_breakout:
         signal = "WASPADA FALSE BREAKOUT"
-    elif breakout and trend_up and volume_ratio >= MIN_VOLUME_RATIO and 50 <= rsi_now <= 70:
+    elif (breakout and trend_up and volume_ratio >= MIN_VOLUME_RATIO
+          and 50 <= rsi_now <= 70 and score >= MIN_BREAKOUT_SCORE):
         signal = "BREAKOUT TERKONFIRMASI"
-    elif prebreakout:
+    elif prebreakout and volume_ratio >= MIN_VOLUME_RATIO and score >= MIN_BREAKOUT_SCORE:
         signal = "CALON BREAKOUT"
     elif accumulation:
         signal = "INDIKASI AKUMULASI TEKNIKAL"
