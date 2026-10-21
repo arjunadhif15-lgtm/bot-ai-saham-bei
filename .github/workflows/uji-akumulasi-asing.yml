@@ -34,3 +34,6 @@ jobs:
           else
             echo "Folder data_foreign belum ditemukan."
           fi
+      - name: Jalankan analisis akumulasi asing
+        run: |
+          python modul_akumulasi_asing_v7.py
