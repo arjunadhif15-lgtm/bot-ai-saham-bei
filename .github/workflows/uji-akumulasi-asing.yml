@@ -1,0 +1,36 @@
+name: Uji Akumulasi Asing 5 Hari
+
+on:
+  workflow_dispatch:
+
+jobs:
+  uji-akumulasi:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Ambil kode dari GitHub
+        uses: actions/checkout@v4
+
+      - name: Siapkan Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instal library
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy yfinance openpyxl requests
+
+      - name: Periksa file modul
+        run: |
+          python -m py_compile modul_akumulasi_asing_v7.py
+          echo "Modul berhasil diperiksa."
+
+      - name: Periksa folder data
+        run: |
+          if [ -d data_foreign ]; then
+            echo "Folder data_foreign ditemukan."
+            find data_foreign -maxdepth 1 -type f -print
+          else
+            echo "Folder data_foreign belum ditemukan."
+          fi
