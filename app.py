@@ -341,6 +341,9 @@ def analyze_stock(ticker, mode):
         (close * volume).tail(20).mean()
     )
 
+    if avg_turnover < 1_000_000_000:
+        return None, "Rata-rata nilai transaksi 20 hari di bawah Rp1 miliar"
+        
     today_turnover = price * float(last["Volume"])
 
     high10 = last["PrevHigh10"]
