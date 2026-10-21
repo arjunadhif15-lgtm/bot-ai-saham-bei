@@ -17,7 +17,7 @@ import yfinance as yf
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(BASE_DIR, "sent_notifications.json")
 
-MIN_SCORE = 70
+MIN_SCORE = 75
 MIN_VOLUME_RATIO = 1.2
 MAX_RSI_ENTRY = 70.0  # RSI di atas ini diberi label PANTAU DULU
 MAX_ABOVE_EMA9_PCT = 3.0  # Harga >3% di atas EMA9 diberi label PANTAU DULU
@@ -441,7 +441,7 @@ def analyze_stock(ticker, data):
                 or (price_above_ema21 and volume_strong)
             )
         )
-        or (false_breakout and score >= 50)
+
     )
 
     return {
