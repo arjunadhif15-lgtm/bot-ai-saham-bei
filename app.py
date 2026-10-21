@@ -747,7 +747,7 @@ telegram_min_score = st.slider(
     "Skor minimum notifikasi",
     min_value=40,
     max_value=100,
-    value=70,
+    value=75,
     step=5
 )
 
