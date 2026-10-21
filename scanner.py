@@ -605,14 +605,14 @@ def make_telegram_message(result):
         f"{result.get('distance_to_resistance_pct', float('nan')):.1f}%\n"
 
         f"Indikasi akumulasi: "
-        f"{'Ya' if result.get('accumulation', False) else 'Belum kuat'}\\n"
+        f"{'Ya' if result.get('accumulation', False) else 'Belum kuat'}\n"
 
         f"Skor indikasi akumulasi: "
         f"{result.get('accumulation_score', 0)}/100 "
-        f"({result.get('accumulation_strength', 'LEMAH')})\\n"
+        f"({result.get('accumulation_strength', 'LEMAH')})\n"
 
         f"Perubahan harga 10 sesi: "
-        f"{result.get('change_10d_pct', 0):.2f}%\\n"
+        f"{result.get('change_10d_pct', 0):.2f}%\n"
 
         f"Risiko false breakout: "
         f"{'TERDETEKSI' if result.get('false_breakout', False) else 'Tidak terdeteksi'}\n\n"
