@@ -717,6 +717,48 @@ def print_top_lists(results):
     print("=" * 60)
 
 
+
+def make_top10_telegram_message(results):
+    """Buat satu pesan Telegram berisi maksimal 10 saham dengan skor tertinggi."""
+    ranked = sorted(
+        results,
+        key=lambda r: (
+            r.get("score", 0),
+            r.get("momentum_score", 0),
+            r.get("accumulation_score", 0),
+        ),
+        reverse=True,
+    )[:TOP_N]
+
+    now = datetime.now(ZoneInfo(TIMEZONE))
+    lines = [
+        f"🏆 TOP {len(ranked)} SAHAM BEI TERBAIK",
+        f"Waktu scan: {now:%d-%m-%Y %H:%M} WIB",
+        "Urutan: skor teknikal → momentum → akumulasi",
+        "",
+    ]
+
+    for i, r in enumerate(ranked, start=1):
+        warning = " ⚠️ FALSE BREAKOUT" if r.get("false_breakout", False) else ""
+        lines.extend([
+            f"{i}. {r['ticker']} — skor {r.get('score', 0)}/100{warning}",
+            f"   Harga: {format_rupiah(r['price'])} | Sinyal: {r['signal']}",
+            f"   Momentum: {r.get('momentum_score', 0)}/100 | Akumulasi: {r.get('accumulation_score', 0)}/100",
+            f"   RSI: {r.get('rsi', 0):.1f} | Volume: {r.get('volume_ratio', 0):.2f}x",
+            f"   Stop loss indikatif: {format_rupiah(r.get('stop_loss', 0))} | Target 1: {format_rupiah(r.get('target_1', 0))}",
+            "",
+        ])
+
+    lines.append(
+        "Catatan: TOP 10 adalah peringkat skor, bukan rekomendasi beli otomatis. "
+        "Data Yahoo Finance dapat terlambat/tidak lengkap. Periksa harga terkini "
+        "dan risiko sebelum transaksi. Skor akumulasi adalah proksi harga-volume."
+    )
+    message = "\n".join(lines)
+    if len(message) > 4000:
+        message = message[:3950] + "\n\nPesan dipersingkat agar sesuai batas Telegram."
+    return message
+
 # ============================================================
 # PROSES UTAMA
 # ============================================================
@@ -810,24 +852,7 @@ def main():
         if result["is_candidate"]:
             candidates += 1
 
-            # MODE UJI: tidak memeriksa status notifikasi harian.
-            # Saham yang memenuhi syarat dapat mengirim notifikasi lagi
-            # pada setiap pemindaian/workflow berikutnya.
-            message = make_telegram_message(result)
-
-            if send_telegram(message):
-                notifications_sent += 1
-                print(
-                    f"  NOTIFIKASI TERKIRIM: {ticker} "
-                    "(mode uji: notifikasi berulang aktif)"
-                )
-            else:
-                print(
-                    f"  NOTIFIKASI GAGAL: {ticker}; "
-                    "akan bisa dicoba lagi "
-                    "pada proses berikutnya."
-                )
-
+        # Notifikasi ditunda sampai semua saham selesai dipindai.
         time.sleep(REQUEST_DELAY_SECONDS)
 
     print("=" * 60)
@@ -848,12 +873,34 @@ def main():
         f"Kandidat skor >= {MIN_SCORE} "
         f"+ syarat teknikal: {candidates}"
     )
-    print(
-        f"Notifikasi terkirim kali ini: "
-        f"{notifications_sent}"
-    )
     print("=" * 60)
     print_top_lists(all_results)
+
+    # Kirim maksimal 10 saham dengan skor tertinggi, walaupun kandidat entry = 0.
+    if all_results:
+        top_ranked = sorted(
+            all_results,
+            key=lambda r: (
+                r.get("score", 0),
+                r.get("momentum_score", 0),
+                r.get("accumulation_score", 0),
+            ),
+            reverse=True,
+        )[:TOP_N]
+        print(
+            f"Mengirim TOP {len(top_ranked)} saham terbaik ke Telegram "
+            "(peringkat skor, bukan hanya kandidat entry)."
+        )
+        if send_telegram(make_top10_telegram_message(top_ranked)):
+            notifications_sent = 1
+            print("NOTIFIKASI TOP 10 TERKIRIM: satu pesan Telegram.")
+        else:
+            print("NOTIFIKASI TOP 10 GAGAL dikirim.")
+    else:
+        print("Tidak ada hasil analisis; TOP 10 tidak dikirim.")
+
+    print(f"Pesan Telegram terkirim kali ini: {notifications_sent}")
+    print("=" * 60)
     if RUN_BACKTEST:
         run_backtest(tickers)
 
