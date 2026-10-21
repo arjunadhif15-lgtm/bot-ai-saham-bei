@@ -666,7 +666,7 @@ with st.sidebar:
     max_tickers = st.slider(
         "Maksimum saham",
         min_value=20,
-        max_value=500,
+        max_value=531,
         value=100,
         step=10
     )
@@ -745,7 +745,7 @@ telegram_chat_id = st.text_input(
 
 telegram_min_score = st.slider(
     "Skor minimum notifikasi",
-    min_value=40,
+    min_value=60,
     max_value=100,
     value=75,
     step=5
