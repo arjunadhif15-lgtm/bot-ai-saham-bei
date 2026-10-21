@@ -745,7 +745,10 @@ def make_top10_telegram_message(results):
             f"   Harga: {format_rupiah(r['price'])} | Sinyal: {r['signal']}",
             f"   Momentum: {r.get('momentum_score', 0)}/100 | Akumulasi: {r.get('accumulation_score', 0)}/100",
             f"   RSI: {r.get('rsi', 0):.1f} | Volume: {r.get('volume_ratio', 0):.2f}x",
-            f"   Stop loss indikatif: {format_rupiah(r.get('stop_loss', 0))} | Target 1: {format_rupiah(r.get('target_1', 0))}",
+            f"   Area entry: {format_rupiah(r.get('entry_low', 0))} - {format_rupiah(r.get('entry_high', 0))}",
+            f"   Stop loss: {format_rupiah(r.get('stop_loss', 0))}",
+            f"   Target 1: {format_rupiah(r.get('target_1', 0))} | Target 2: {format_rupiah(r.get('target_2', 0))}",
+            f"   Status entry: {r.get('entry_status', 'Perlu konfirmasi')}",
             "",
         ])
 
