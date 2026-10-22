@@ -29,11 +29,9 @@ TIMEZONE = "Asia/Jakarta"
 
 # Fitur tambahan F-M
 TOP_N = 10
-ENTRY1_CAPITAL_PCT = 60
-ENTRY2_CAPITAL_PCT = 40
 MAX_RISK_PER_TRADE_PCT = 1.0
 MIN_REWARD_RISK = 1.5
-DEFAULT_CAPITAL = 10_000_000
+DEFAULT_CAPITAL = 20_000_000
 RUN_BACKTEST = os.getenv("RUN_BACKTEST", "0").strip() == "1"
 BACKTEST_TICKERS_LIMIT = 30
 BACKTEST_FORWARD_DAYS = 5
@@ -375,68 +373,28 @@ def analyze_stock(ticker, data):
 
     # Penentuan is_candidate dipindahkan ke bawah, setelah semua variabel dihitung.
 
-    # Dua area indikatif: Entry 1 untuk posisi awal, Entry 2 untuk penambahan
-    # hanya jika support bertahan. Ini simulasi, bukan order otomatis.
-    entry1_low = np.nan
-    entry1_high = np.nan
-    entry2_low = np.nan
-    entry2_high = np.nan
-
-    if false_breakout:
-        entry_status = "Hindari entry dahulu; risiko false breakout terdeteksi"
-    elif watch_only:
-        entry_status = "PANTAU DULU — harga/RSI terlalu panas; jangan mengejar harga"
-    else:
-        if breakout20 and volume_strong and trend_up:
-            # Entry 1 di sekitar area breakout; jangan menganggap harga pasti lanjut naik.
-            entry1_low = max(resistance20, price - 0.25 * atr14) if pd.notna(resistance20) else price
-            entry1_high = price + 0.10 * atr14
-            entry_status = "Breakout terdeteksi; tunggu konfirmasi harga dan volume"
-        elif prebreakout and pd.notna(resistance20):
-            # Entry 1 baru dipertimbangkan setelah resistance benar-benar ditembus.
-            entry1_low = resistance20
-            entry1_high = resistance20 + 0.20 * atr14
-            entry_status = "Calon breakout; Entry 1 menunggu konfirmasi tembus resistance"
+    # Area entry indikatif. Hindari mengejar harga saat RSI/harga terlalu tinggi.
+    entry_low = np.nan
+    entry_high = np.nan
+    if not watch_only and not false_breakout:
+        if breakout20:
+            entry_low = price
+            entry_high = price + (0.25 * atr14)
+            entry_status = "Breakout terdeteksi; verifikasi harga dan volume terkini"
+        elif prebreakout:
+            entry_low = max(ema21_now, price - (0.5 * atr14))
+            entry_high = min(resistance20, price + (0.25 * atr14)) if pd.notna(resistance20) else price
+            entry_status = "Calon breakout; tunggu konfirmasi tembus resistance"
         elif price_above_ema21 and volume_strong:
-            entry1_low = max(ema21_now, price - 0.50 * atr14)
-            entry1_high = price
-            entry_status = "Tren/volume mendukung; tunggu harga masuk area Entry 1"
+            entry_low = max(ema21_now, price - (0.5 * atr14))
+            entry_high = price
+            entry_status = "Belum breakout; tunggu konfirmasi dan pullback"
         else:
-            entry_status = "Belum ada area Entry 1 yang memenuhi syarat teknikal"
-
-        # Entry 2 lebih rendah: sekitar EMA21/support dan wajib ada tanda pantulan.
-        # Hanya diisi jika harga masih di atas EMA21 dan tidak ada false breakout.
-        if price_above_ema21 and trend_medium_up and not false_breakout:
-            entry2_low = max(ema21_now - 0.15 * atr14, price - 1.25 * atr14)
-            entry2_high = min(ema21_now + 0.15 * atr14, price - 0.20 * atr14)
-            if entry2_low <= 0 or entry2_high <= 0 or entry2_low > entry2_high:
-                entry2_low = np.nan
-                entry2_high = np.nan
-        if not np.isfinite(entry2_low) or not np.isfinite(entry2_high):
-            entry_status += "; Entry 2 belum tersedia karena support/tren belum cukup kuat"
-        else:
-            entry_status += "; Entry 2 hanya jika support bertahan dan ada pantulan"
-
-    # Jaga batas area agar tidak terbalik dan jangan keluarkan area harga tidak valid.
-    if not (np.isfinite(entry1_low) and np.isfinite(entry1_high) and 0 < entry1_low <= entry1_high):
-        entry1_low = np.nan
-        entry1_high = np.nan
-    if not (np.isfinite(entry2_low) and np.isfinite(entry2_high) and 0 < entry2_low <= entry2_high):
-        entry2_low = np.nan
-        entry2_high = np.nan
-
-    entry1_budget = DEFAULT_CAPITAL * ENTRY1_CAPITAL_PCT / 100
-    entry2_budget = DEFAULT_CAPITAL * ENTRY2_CAPITAL_PCT / 100
-    entry1_lot = int(entry1_budget // (entry1_high * 100)) if np.isfinite(entry1_high) and entry1_high > 0 else 0
-    entry2_lot = int(entry2_budget // (entry2_high * 100)) if np.isfinite(entry2_high) and entry2_high > 0 else 0
-    entry1_est_price = (entry1_low + entry1_high) / 2 if np.isfinite(entry1_low) and np.isfinite(entry1_high) else np.nan
-    entry2_est_price = (entry2_low + entry2_high) / 2 if np.isfinite(entry2_low) and np.isfinite(entry2_high) else np.nan
-    combined_lots = entry1_lot + entry2_lot
-    combined_average = (
-        (entry1_lot * entry1_est_price + entry2_lot * entry2_est_price) / combined_lots
-        if combined_lots > 0 and np.isfinite(entry1_est_price) and np.isfinite(entry2_est_price)
-        else np.nan
-    )
+            entry_status = "Belum ada area entry yang memenuhi syarat"
+    elif false_breakout:
+        entry_status = "Hindari entry dahulu; harga menunjukkan risiko false breakout"
+    else:
+        entry_status = "PANTAU DULU — jangan mengejar harga; tunggu kondisi lebih ideal"
 
     stop_loss = max(0.0, price - (1.5 * atr14))
     target_1 = price + (2.3 * atr14)
@@ -520,18 +478,8 @@ def analyze_stock(ticker, data):
         "estimated_trade_risk": float(estimated_trade_risk),
         "trend_up": bool(trend_up),
         "volume_strong": bool(volume_strong),
-        "entry1_low": float(entry1_low),
-        "entry1_high": float(entry1_high),
-        "entry2_low": float(entry2_low),
-        "entry2_high": float(entry2_high),
-        "entry1_lot": int(entry1_lot),
-        "entry2_lot": int(entry2_lot),
-        "entry1_budget": float(entry1_budget),
-        "entry2_budget": float(entry2_budget),
-        "combined_lots": int(combined_lots),
-        "combined_average": float(combined_average) if np.isfinite(combined_average) else np.nan,
-        "entry_low": float(entry1_low),
-        "entry_high": float(entry1_high),
+        "entry_low": float(entry_low),
+        "entry_high": float(entry_high),
         "entry_status": entry_status,
         "stop_loss": float(stop_loss),
         "target_1": float(target_1),
@@ -695,10 +643,9 @@ def make_telegram_message(result):
         "Catatan: harga berdasarkan data harian "
         "Yahoo Finance dan dapat terlambat atau "
         "tidak lengkap. Area entry, stop loss, "
-        "dan target merupakan perkiraan teknikal. Modal simulasi maksimal "
-        "Rp10.000.000 per saham dibagi Entry 1 60% dan Entry 2 40%; "
-        "Entry 2 hanya dipertimbangkan jika support bertahan dan ada pantulan. "
-        "Bukan jaminan profit atau instruksi otomatis untuk membeli. Jika berstatus PANTAU DULU, "
+        "dan target merupakan perkiraan teknikal, "
+        "bukan jaminan profit atau instruksi "
+        "otomatis untuk membeli. Jika berstatus PANTAU DULU, "
         "hindari mengejar harga dan tunggu evaluasi ulang. Periksa harga "
         "terkini sebelum melakukan transaksi."
     )
@@ -771,13 +718,6 @@ def print_top_lists(results):
 
 
 
-def _valid_price(value):
-    try:
-        return value is not None and np.isfinite(float(value)) and float(value) > 0
-    except (TypeError, ValueError):
-        return False
-
-
 def make_top10_telegram_message(results):
     """Buat satu pesan Telegram berisi maksimal 10 saham dengan skor tertinggi."""
     ranked = sorted(
@@ -805,21 +745,7 @@ def make_top10_telegram_message(results):
             f"   Harga: {format_rupiah(r['price'])} | Sinyal: {r['signal']}",
             f"   Momentum: {r.get('momentum_score', 0)}/100 | Akumulasi: {r.get('accumulation_score', 0)}/100",
             f"   RSI: {r.get('rsi', 0):.1f} | Volume: {r.get('volume_ratio', 0):.2f}x",
-            (
-                f"   Entry 1 (awal, {ENTRY1_CAPITAL_PCT}% modal): {format_rupiah(r['entry1_low'])} - {format_rupiah(r['entry1_high'])} | Est. {r.get('entry1_lot', 0)} lot"
-                if _valid_price(r.get("entry1_low")) and _valid_price(r.get("entry1_high"))
-                else f"   Entry 1 (awal, {ENTRY1_CAPITAL_PCT}% modal): Belum tersedia"
-            ),
-            (
-                f"   Entry 2 (tambah, {ENTRY2_CAPITAL_PCT}% modal): {format_rupiah(r['entry2_low'])} - {format_rupiah(r['entry2_high'])} | Est. {r.get('entry2_lot', 0)} lot"
-                if _valid_price(r.get("entry2_low")) and _valid_price(r.get("entry2_high"))
-                else f"   Entry 2 (tambah, {ENTRY2_CAPITAL_PCT}% modal): Belum tersedia — wajib konfirmasi support"
-            ),
-            (
-                f"   Simulasi jika keduanya terisi: {r.get('combined_lots', 0)} lot total | Avg indikatif {format_rupiah(r['combined_average'])}"
-                if _valid_price(r.get("combined_average"))
-                else "   Simulasi average gabungan: belum tersedia"
-            ),
+            f"   Area entry: {format_rupiah(r.get('entry_low', 0))} - {format_rupiah(r.get('entry_high', 0))}",
             f"   Stop loss: {format_rupiah(r.get('stop_loss', 0))}",
             f"   Target 1: {format_rupiah(r.get('target_1', 0))} | Target 2: {format_rupiah(r.get('target_2', 0))}",
             f"   Status entry: {r.get('entry_status', 'Perlu konfirmasi')}",
