@@ -592,36 +592,37 @@ def analyze_stock(ticker, data):
         price, atr14, ema9_now, ema21_now, support20, fib382, fib500, fib618
     )
 
-    # Zona harga ditampilkan, tetapi bukan instruksi beli otomatis.
+    # Keterangan singkat untuk Telegram.
     structure_ok = bool(trend_medium_up and price >= ema50_now * 0.97 and not false_breakout)
-    if not structure_ok:
-        entry_status = f"Zona indikatif tersedia ({entry1_source}); tren/struktur belum memenuhi syarat, jangan entry dulu"
-        entry2_status = f"Zona indikatif tersedia ({entry2_source}); validasi ulang jika support/tren berubah"
-    elif watch_only:
-        entry_status = f"Area koreksi pertama: {entry1_source}; tunggu harga masuk zona dan pantulan terkonfirmasi"
-        entry2_status = f"Area koreksi kedua: {entry2_source}; tunggu koreksi kedua dan pantulan terkonfirmasi"
+    if false_breakout:
+        entry_status = "Jangan entry dulu: false breakout"
+        entry2_status = "Tunggu tren kembali kuat"
+    elif not structure_ok:
+        entry_status = "Zona rencana saja; tren belum kuat"
+        entry2_status = "Belum aktif; cek ulang support"
     elif correction_stage == 1:
-        entry_status = f"Koreksi pertama terdeteksi ({correction_drawdown_pct:.1f}% dari puncak); tunggu pantulan di zona {entry1_source}"
-        entry2_status = f"Rencana zona koreksi kedua ({entry2_source}); belum aktif sebelum koreksi pertama selesai"
+        entry_status = "Koreksi 1 terdeteksi; tunggu pantulan"
+        entry2_status = "Belum aktif; tunggu koreksi berikutnya"
     elif correction_stage == 2:
-        entry_status = f"Zona Entry 1 ({entry1_source}) adalah referensi koreksi pertama; jangan anggap sebagai sinyal baru"
-        entry2_status = f"Koreksi kedua terdeteksi ({correction_drawdown_pct:.1f}% dari puncak); tunggu pantulan di zona {entry2_source}"
+        entry_status = "Zona pantauan; bukan sinyal beli baru"
+        entry2_status = "Koreksi 2 terdeteksi; tunggu pantulan"
     elif correction_stage >= 3:
-        entry_status = f"Zona Entry 1 indikatif ({entry1_source}); koreksi ke-3 atau lebih, tunggu struktur tren baru"
-        entry2_status = f"Zona Entry 2 indikatif ({entry2_source}); koreksi terlalu lanjut untuk label koreksi kedua"
+        entry_status = "Koreksi sudah lanjut; evaluasi ulang"
+        entry2_status = "Jangan buru-buru entry"
     else:
-        entry_status = f"Zona indikatif koreksi pertama ({entry1_source}); menunggu koreksi pertama dan konfirmasi pantulan"
-        entry2_status = f"Zona indikatif koreksi kedua ({entry2_source}); menunggu koreksi pertama selesai lalu koreksi kedua"
+        entry_status = "Rencana saja; tunggu harga masuk dan memantul"
+        entry2_status = "Belum aktif; tunggu koreksi lanjutan"
 
     # Field lama dipertahankan agar fungsi lain tetap kompatibel.
     entry_low = entry1_low if np.isfinite(entry1_low) else entry2_low
     entry_high = entry1_high if np.isfinite(entry1_high) else entry2_high
 
-    # Satu SL untuk kedua zona: diletakkan di bawah Entry 2 agar berada
-    # di bawah kedua rentang. Target tetap satu set untuk kedua entry.
-    stop_loss = max(0.0, min(price - (1.5 * atr14), entry2_low - (0.25 * atr14)))
+    # Satu SL untuk kedua entry, di bawah zona Entry 2.
+    sl_buffer = max(0.25 * atr14, price * 0.005)
+    stop_loss = max(0.0, entry2_low - sl_buffer)
+    # Satu set target bersama; target tetap di atas harga saat pemindaian.
     target_1 = price + (2.3 * atr14)
-    target_2 = price + (3 * atr14)
+    target_2 = max(price + (3.0 * atr14), target_1 + (0.5 * atr14))
 
     # G: momentum awal sebelum breakout
     momentum_5d_pct = (price / float(close.iloc[-6]) - 1) * 100 if len(close) >= 6 and float(close.iloc[-6]) > 0 else 0.0
@@ -636,16 +637,17 @@ def analyze_stock(ticker, data):
     if pd.notna(near_resistance_pct) and 0 <= near_resistance_pct <= 5: momentum_score += 15
     momentum_score = min(100, momentum_score)
 
-    # H/K: risk/reward dan ukuran posisi simulasi berbasis modal Rp20 juta.
-    risk_per_share = max(price - stop_loss, 0.0)
-    reward_per_share = max(target_1 - price, 0.0)
+    # Risiko dihitung dari Entry 1 (entry lebih tinggi = perhitungan konservatif).
+    entry1_mid = (entry1_low + entry1_high) / 2 if np.isfinite(entry1_low) and np.isfinite(entry1_high) else price
+    risk_per_share = max(entry1_mid - stop_loss, 0.0)
+    reward_per_share = max(target_1 - entry1_mid, 0.0)
     reward_risk = reward_per_share / risk_per_share if risk_per_share > 0 else 0.0
     risk_reward_ok = bool(reward_risk >= MIN_REWARD_RISK)
     risk_budget = DEFAULT_CAPITAL * MAX_RISK_PER_TRADE_PCT / 100
     risk_lot = int(risk_budget // (risk_per_share * 100)) if risk_per_share > 0 else 0
-    capital_lot = int(DEFAULT_CAPITAL // (price * 100)) if price > 0 else 0
+    capital_lot = int(DEFAULT_CAPITAL // (entry1_mid * 100)) if entry1_mid > 0 else 0
     suggested_lot = max(0, min(risk_lot, capital_lot))
-    capital_used = suggested_lot * price * 100
+    capital_used = suggested_lot * entry1_mid * 100
     estimated_trade_risk = suggested_lot * risk_per_share * 100
     risk_filter_pass = bool(risk_reward_ok and not false_breakout and not watch_only)
 
@@ -857,16 +859,16 @@ def make_telegram_message(result):
 
         f"Area entry: {entry_text}\n"
 
-        f"Status entry: "
+        f"Status: "
         f"{result['entry_status']}\n\n"
 
-        f"Stop loss indikatif: "
+        f"SL: "
         f"{format_rupiah(result['stop_loss'])}\n"
 
-        f"Target 1 indikatif: "
+        f"T1: "
         f"{format_rupiah(result['target_1'])}\n"
 
-        f"Target 2 indikatif: "
+        f"T2: "
         f"{format_rupiah(result['target_2'])}\n"
         f"Reward/risk ke Target 1: {result.get('reward_risk', 0):.2f}x\n"
         f"Lot simulasi (modal Rp{DEFAULT_CAPITAL:,.0f}, risiko max {MAX_RISK_PER_TRADE_PCT:.1f}%): {result.get('suggested_lot', 0)} lot\n"
@@ -990,22 +992,22 @@ def make_top10_telegram_messages(results):
         e2l = price_or_wait(r.get("entry2_low"))
         e2h = price_or_wait(r.get("entry2_high"))
         entry2 = f"{e2l}–{e2h}" if e2l != "Belum tersedia" and e2h != "Belum tersedia" else "Belum tersedia; tunggu koreksi kedua valid"
-        blocks.append("\n".join([
+        blocks.append("\\n".join([
             f"{i}. {r.get('ticker', '?')} | Skor {r.get('score', 0)}/100{warning}",
             f"💰 Harga {price_or_wait(r.get('price'))} | {r.get('signal', 'PANTAU')}",
-            f"🎯 Entry 1 (koreksi pertama): {entry1}",
-            f"   Status: {r.get('entry_status', 'Perlu konfirmasi')}",
-            f"🔄 Entry 2 (koreksi kedua): {entry2}",
-            f"   Status: {r.get('entry2_status', 'Perlu konfirmasi')}",
-            f"🔎 Tahap koreksi: {r.get('correction_stage', 0)} | Drawdown: {r.get('correction_drawdown_pct', 0):.1f}%",
-            f"📍 Support: {price_or_wait(r.get('support20'))} | Fib 38,2%: {price_or_wait(r.get('fib382'))} | 50%: {price_or_wait(r.get('fib500'))} | 61,8%: {price_or_wait(r.get('fib618'))}",
+            f"🎯 Entry 1: {entry1}",
+            f"   {r.get('entry_status', 'Tunggu pantulan')}",
+            f"🔄 Entry 2: {entry2}",
+            f"   {r.get('entry2_status', 'Belum aktif')}",
+            f"🔎 Tahap koreksi: {r.get('correction_stage', 0)}",
+            f"📍 Support: {price_or_wait(r.get('support20'))} | Fib 38/50/62: {price_or_wait(r.get('fib382'))}/{price_or_wait(r.get('fib500'))}/{price_or_wait(r.get('fib618'))}",
             f"🛑 SL: {price_or_wait(r.get('stop_loss'))} | 🎯 T1: {price_or_wait(r.get('target_1'))} | T2: {price_or_wait(r.get('target_2'))}",
             f"📊 Momentum {r.get('momentum_score', 0)}/100 | Akumulasi {r.get('accumulation_score', 0)}/100",
         ]))
 
     footer = (
-        "ℹ️ TOP 10 adalah peringkat skor, bukan perintah beli. Data Yahoo Finance bisa terlambat. "
-        "Entry 1/2, SL, dan target hanya perkiraan teknikal; cek harga terkini dan konfirmasi pantulan."
+        "ℹ️ Bukan perintah beli. Cek harga terkini; entry hanya jika harga masuk zona dan memantul. "
+        "SL/T1/T2 adalah perkiraan, bukan jaminan."
     )
     messages = []
     current_blocks = []
