@@ -260,46 +260,105 @@ def detect_current_correction_stage(close, high, low, ema50, atr14, lookback=90)
     return min(completed + 1, 3), max(0.0, current_drawdown_pct)
 
 
-def build_confluence_pullback_zone(price, atr14, ema9_now, ema21_now,
-                                   support20, fib382, fib500, fib618):
-    """Bangun zona koreksi dari konfluensi minimal dua level teknikal."""
+def build_entry_zones(price, atr14, ema9_now, ema21_now,
+                      support20, fib382, fib500, fib618):
+    """Hitung dua zona harga indikatif: koreksi pertama dan koreksi kedua.
+
+    Zona tetap ditampilkan meski koreksi belum aktif agar pengguna dapat
+    menyiapkan level pantauan. Zona bukan sinyal beli; konfirmasi pantulan
+    tetap diperlukan.
+    """
+    price = float(price)
+    atr14 = float(atr14) if np.isfinite(atr14) and atr14 > 0 else price * 0.03
+    tolerance = max(0.35 * atr14, price * 0.005)
     levels = [
         ("EMA9", ema9_now), ("EMA21", ema21_now),
         ("Support20", support20), ("Fib38.2%", fib382),
         ("Fib50%", fib500), ("Fib61.8%", fib618),
     ]
-    # Fokus pada level yang masih relevan terhadap harga sekarang.
-    candidates = [(name, float(value)) for name, value in levels
-                  if np.isfinite(value) and value > 0
-                  # Level di atas harga secara material lebih mungkin menjadi
-                  # resistance, jadi tidak dipakai sebagai zona support pullback.
-                  and float(value) <= price + 0.15 * atr14
-                  and abs(float(value) - price) <= 1.5 * atr14]
-    if len(candidates) < 2:
-        return np.nan, np.nan, "Konfluensi EMA/support/Fibonacci belum cukup kuat"
 
-    # Cari kelompok level yang paling rapat; minimal dua level harus berdekatan.
-    best_group = []
-    best_distance = float("inf")
-    tolerance = max(0.35 * atr14, price * 0.005)
-    for _, anchor in candidates:
-        group = [(name, value) for name, value in candidates
-                 if abs(value - anchor) <= tolerance]
-        if len(group) > len(best_group):
-            best_group = group
-            best_distance = abs(anchor - price)
-        elif len(group) == len(best_group) and abs(anchor - price) < best_distance:
-            best_group = group
-            best_distance = abs(anchor - price)
+    # Hanya gunakan level di bawah harga sekarang dan dalam rentang yang
+    # masih relevan. Level yang jauh di atas harga bukan support pullback.
+    candidates = []
+    for name, value in levels:
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if (np.isfinite(value) and value > 0
+                and value < price
+                and value >= price * 0.80):
+            candidates.append((name, value))
 
-    if len(best_group) < 2:
-        return np.nan, np.nan, "Level teknikal belum membentuk konfluensi minimal dua acuan"
+    # Kelompokkan level teknikal yang berdekatan menjadi zona konfluensi.
+    groups = []
+    unused = candidates[:]
+    while unused:
+        anchor_name, anchor_value = max(unused, key=lambda item: item[1])
+        group = [(name, value) for name, value in unused
+                 if abs(value - anchor_value) <= tolerance]
+        groups.append(group)
+        group_keys = {(name, value) for name, value in group}
+        unused = [item for item in unused if item not in group_keys]
 
-    anchor = float(np.mean([value for _, value in best_group]))
-    zone_low = max(0.01, anchor - 0.25 * atr14)
-    zone_high = anchor + 0.25 * atr14
-    names = "/".join(name for name, _ in best_group)
-    return zone_low, zone_high, f"Konfluensi {names}; tunggu pantulan terkonfirmasi"
+    clusters = []
+    for group in groups:
+        center = float(np.mean([value for _, value in group]))
+        names = "/".join(name for name, _ in group)
+        clusters.append((center, names, len(group) >= 2))
+    clusters.sort(key=lambda item: item[0], reverse=True)
+
+    # Hindari dua entry yang sebenarnya merupakan zona yang sama.
+    distinct = []
+    min_separation = max(0.65 * atr14, price * 0.008)
+    for cluster in clusters:
+        if all(abs(cluster[0] - old[0]) >= min_separation for old in distinct):
+            distinct.append(cluster)
+
+    # Entry 1 adalah zona paling dekat di bawah harga sekarang.
+    if distinct:
+        e1_anchor, e1_names, e1_confluence = distinct[0]
+        e1_source = ("Konfluensi " if e1_confluence else "Level tunggal ") + e1_names
+    else:
+        # Fallback terukur agar rentang tetap tersedia, tanpa menyebutnya sinyal.
+        e1_anchor = min(ema21_now, price - 0.35 * atr14)
+        e1_anchor = max(price * 0.85, min(float(e1_anchor), price - 0.05 * atr14))
+        e1_source = "zona estimasi EMA21/ATR; konfluensi belum cukup"
+
+    # Entry 2 memakai cluster lebih rendah yang berbeda dari Entry 1.
+    lower_clusters = [c for c in distinct if c[0] < e1_anchor - min_separation * 0.5]
+    if lower_clusters:
+        e2_anchor, e2_names, e2_confluence = lower_clusters[0]
+        e2_source = ("Konfluensi " if e2_confluence else "Level tunggal ") + e2_names
+    else:
+        deeper_candidates = [
+            float(v) for v in (support20, fib618, ema21_now)
+            if np.isfinite(v) and 0 < float(v) < e1_anchor - min_separation * 0.5
+        ]
+        if deeper_candidates:
+            e2_anchor = max(deeper_candidates)
+            e2_source = "zona support/Fibonacci berikutnya"
+        else:
+            e2_anchor = e1_anchor - max(atr14, price * 0.015)
+            e2_source = "zona estimasi lebih dalam berbasis ATR"
+        e2_anchor = max(price * 0.80, min(e2_anchor, e1_anchor - min_separation * 0.5))
+
+    width = max(0.18 * atr14, price * 0.003)
+    e1_low = max(price * 0.80, e1_anchor - width)
+    e1_high = min(price * 0.999, e1_anchor + width)
+    e2_low = max(price * 0.80, e2_anchor - width)
+    e2_high = min(e1_low - 0.01, e2_anchor + width)
+
+    # Pastikan batas bawah/atas positif dan berurutan setelah pembatasan.
+    e1_low = max(0.01, min(e1_low, e1_high))
+    e2_low = max(0.01, min(e2_low, e2_high))
+    if e2_high <= e2_low:
+        e2_high = e2_low + max(0.01, price * 0.002)
+
+    return (
+        float(e1_low), float(e1_high), e1_source,
+        float(e2_low), float(e2_high), e2_source,
+    )
 
 
 # ============================================================
@@ -502,20 +561,12 @@ def analyze_stock(ticker, data):
 
     # Penentuan is_candidate dipindahkan ke bawah, setelah semua variabel dihitung.
 
-    # Entry 1 = koreksi pertama; Entry 2 = koreksi kedua.
-    # Keduanya hanya muncul jika koreksi aktif terdeteksi dan ada konfluensi
-    # minimal dua acuan dari EMA9/EMA21/support/Fibonacci.
-    entry1_low = np.nan
-    entry1_high = np.nan
-    entry2_low = np.nan
-    entry2_high = np.nan
-    entry_status = "Belum ada koreksi pertama yang valid"
-    entry2_status = "Belum ada koreksi kedua yang valid"
-
+    # Entry 1 = zona indikatif koreksi pertama; Entry 2 = zona indikatif koreksi kedua.
+    # Harga ditampilkan sejak awal agar pengguna bisa menyiapkan alarm harga.
+    # Status tetap membedakan zona rencana dengan sinyal entry yang terkonfirmasi.
     support20 = float(low.tail(20).min()) if len(low) >= 20 else float(low.min())
 
-    # Fibonacci dihitung dari swing low yang terjadi sebelum swing high terbaru,
-    # supaya level retracement merepresentasikan gerak naik, bukan urutan acak.
+    # Fibonacci dari swing low sebelum swing high terbaru.
     fib_window = min(60, len(data))
     high_window = high.tail(fib_window)
     low_window = low.tail(fib_window)
@@ -534,48 +585,41 @@ def analyze_stock(ticker, data):
     correction_stage, correction_drawdown_pct = detect_current_correction_stage(
         close, high, low, ema50, atr14
     )
-    zone_low, zone_high, confluence_status = build_confluence_pullback_zone(
+    (
+        entry1_low, entry1_high, entry1_source,
+        entry2_low, entry2_high, entry2_source,
+    ) = build_entry_zones(
         price, atr14, ema9_now, ema21_now, support20, fib382, fib500, fib618
     )
 
-    # Entry hanya valid dalam tren menengah yang masih terjaga dan tidak sedang
-    # menghadapi false breakout/overheating. Stage 3+ tidak dipaksakan menjadi E1/E2.
+    # Zona harga ditampilkan, tetapi bukan instruksi beli otomatis.
     structure_ok = bool(trend_medium_up and price >= ema50_now * 0.97 and not false_breakout)
     if not structure_ok:
-        entry_status = "Tunda: struktur tren belum cukup aman untuk entry koreksi"
-        entry2_status = "Tunda: struktur tren belum cukup aman untuk entry koreksi"
-    elif correction_stage == 0:
-        entry_status = "Menunggu koreksi pertama; jangan mengejar harga naik"
-        entry2_status = "Menunggu koreksi kedua setelah koreksi pertama selesai"
-    elif correction_stage >= 3:
-        entry_status = "Koreksi ke-3 atau lebih; tidak dilabeli Entry 1/2"
-        entry2_status = "Koreksi ke-3 atau lebih; tunggu struktur tren baru"
-    elif not (np.isfinite(zone_low) and np.isfinite(zone_high)):
-        entry_status = confluence_status
-        entry2_status = confluence_status
+        entry_status = f"Zona indikatif tersedia ({entry1_source}); tren/struktur belum memenuhi syarat, jangan entry dulu"
+        entry2_status = f"Zona indikatif tersedia ({entry2_source}); validasi ulang jika support/tren berubah"
     elif watch_only:
-        entry_status = "Tunda: harga/RSI terlalu panas; tunggu kondisi normal"
-        entry2_status = "Tunda: harga/RSI terlalu panas; tunggu kondisi normal"
+        entry_status = f"Area koreksi pertama: {entry1_source}; tunggu harga masuk zona dan pantulan terkonfirmasi"
+        entry2_status = f"Area koreksi kedua: {entry2_source}; tunggu koreksi kedua dan pantulan terkonfirmasi"
     elif correction_stage == 1:
-        entry1_low, entry1_high = float(zone_low), float(zone_high)
-        entry_status = (
-            f"Koreksi pertama terdeteksi ({correction_drawdown_pct:.1f}% dari puncak); "
-            f"tunggu pantulan di zona. {confluence_status}"
-        )
-        entry2_status = "Belum waktunya: Entry 2 hanya setelah koreksi kedua terdeteksi"
+        entry_status = f"Koreksi pertama terdeteksi ({correction_drawdown_pct:.1f}% dari puncak); tunggu pantulan di zona {entry1_source}"
+        entry2_status = f"Rencana zona koreksi kedua ({entry2_source}); belum aktif sebelum koreksi pertama selesai"
     elif correction_stage == 2:
-        entry2_low, entry2_high = float(zone_low), float(zone_high)
-        entry_status = "Koreksi pertama sudah terlewati; bukan sinyal Entry 1 baru"
-        entry2_status = (
-            f"Koreksi kedua terdeteksi ({correction_drawdown_pct:.1f}% dari puncak); "
-            f"tunggu pantulan di zona. {confluence_status}"
-        )
+        entry_status = f"Zona Entry 1 ({entry1_source}) adalah referensi koreksi pertama; jangan anggap sebagai sinyal baru"
+        entry2_status = f"Koreksi kedua terdeteksi ({correction_drawdown_pct:.1f}% dari puncak); tunggu pantulan di zona {entry2_source}"
+    elif correction_stage >= 3:
+        entry_status = f"Zona Entry 1 indikatif ({entry1_source}); koreksi ke-3 atau lebih, tunggu struktur tren baru"
+        entry2_status = f"Zona Entry 2 indikatif ({entry2_source}); koreksi terlalu lanjut untuk label koreksi kedua"
+    else:
+        entry_status = f"Zona indikatif koreksi pertama ({entry1_source}); menunggu koreksi pertama dan konfirmasi pantulan"
+        entry2_status = f"Zona indikatif koreksi kedua ({entry2_source}); menunggu koreksi pertama selesai lalu koreksi kedua"
 
     # Field lama dipertahankan agar fungsi lain tetap kompatibel.
     entry_low = entry1_low if np.isfinite(entry1_low) else entry2_low
     entry_high = entry1_high if np.isfinite(entry1_high) else entry2_high
 
-    stop_loss = max(0.0, price - (1.5 * atr14))
+    # Satu SL untuk kedua zona: diletakkan di bawah Entry 2 agar berada
+    # di bawah kedua rentang. Target tetap satu set untuk kedua entry.
+    stop_loss = max(0.0, min(price - (1.5 * atr14), entry2_low - (0.25 * atr14)))
     target_1 = price + (2.3 * atr14)
     target_2 = price + (3 * atr14)
 
@@ -669,6 +713,8 @@ def analyze_stock(ticker, data):
         "fib618": float(fib618) if np.isfinite(fib618) else np.nan,
         "entry_status": entry_status,
         "entry2_status": entry2_status,
+        "entry1_source": entry1_source,
+        "entry2_source": entry2_source,
         "correction_stage": int(correction_stage),
         "correction_drawdown_pct": float(correction_drawdown_pct),
         "stop_loss": float(stop_loss),
