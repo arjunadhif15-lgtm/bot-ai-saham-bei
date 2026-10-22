@@ -957,7 +957,7 @@ def print_top_lists(results):
 
 
 def make_top10_telegram_messages(results):
-    """Buat pesan TOP 10 menjadi beberapa bagian agar tidak terpotong Telegram."""
+    """Buat pesan TOP 10 Telegram dengan format sederhana dan baris baru asli."""
     ranked = sorted(
         results,
         key=lambda r: (
@@ -980,52 +980,78 @@ def make_top10_telegram_messages(results):
     now = datetime.now(ZoneInfo(TIMEZONE))
     header = [
         f"🏆 TOP {len(ranked)} SAHAM BEI",
-        f"📅 {now:%d-%m-%Y %H:%M} WIB",
-        "Urutan: skor teknikal → momentum → akumulasi",
+        f"📅 {now:%d-%m-%Y} | {now:%H:%M} WIB",
     ]
+
+    divider = "━━━━━━━━━━━━━━"
     blocks = []
+
     for i, r in enumerate(ranked, start=1):
         warning = " ⚠️ FALSE BREAKOUT" if r.get("false_breakout", False) else ""
+
         e1l = price_or_wait(r.get("entry1_low", r.get("entry_low")))
         e1h = price_or_wait(r.get("entry1_high", r.get("entry_high")))
-        entry1 = f"{e1l}–{e1h}" if e1l != "Belum tersedia" and e1h != "Belum tersedia" else "Belum tersedia; tunggu koreksi pertama valid"
+        entry1 = (
+            f"{e1l}–{e1h.removeprefix('Rp')}"
+            if e1l != "Belum tersedia" and e1h != "Belum tersedia"
+            else "Belum tersedia"
+        )
+
         e2l = price_or_wait(r.get("entry2_low"))
         e2h = price_or_wait(r.get("entry2_high"))
-        entry2 = f"{e2l}–{e2h}" if e2l != "Belum tersedia" and e2h != "Belum tersedia" else "Belum tersedia; tunggu koreksi kedua valid"
-        blocks.append("\\n".join([
-            f"{i}. {r.get('ticker', '?')}  |  Skor {r.get('score', 0)}/100{warning}",
-            f"Harga   : {price_or_wait(r.get('price'))}  |  {r.get('signal', 'PANTAU')}",
+        entry2 = (
+            f"{e2l}–{e2h.removeprefix('Rp')}"
+            if e2l != "Belum tersedia" and e2h != "Belum tersedia"
+            else "Belum tersedia"
+        )
+
+        blocks.append(chr(10).join([
+            divider,
+            f"{i}. {r.get('ticker', '?')} | Skor {r.get('score', 0)}/100{warning}",
             "",
-            f"ENTRY 1 : {entry1}",
-            f"  {r.get('entry_status', 'Tunggu pantulan')}",
-            f"ENTRY 2 : {entry2}",
-            f"  {r.get('entry2_status', 'Belum aktif')}",
+            "💰 HARGA",
+            f"{price_or_wait(r.get('price'))} — {r.get('signal', 'PANTAU')}",
             "",
+            "🎯 RENCANA BELI",
+            f"Entry 1 : {entry1}",
+            f"Entry 2 : {entry2}",
+            "",
+            "📍 LEVEL PENTING",
             f"Support : {price_or_wait(r.get('support20'))}",
-            f"Fibo    : 38% {price_or_wait(r.get('fib382'))}  |  50% {price_or_wait(r.get('fib500'))}  |  62% {price_or_wait(r.get('fib618'))}",
-            f"SL      : {price_or_wait(r.get('stop_loss'))}",
-            f"Target  : T1 {price_or_wait(r.get('target_1'))}  |  T2 {price_or_wait(r.get('target_2'))}",
-            f"Momentum: {r.get('momentum_score', 0)}/100  |  Akumulasi: {r.get('accumulation_score', 0)}/100",
+            f"Fibo 38%: {price_or_wait(r.get('fib382'))}",
+            f"Fibo 50%: {price_or_wait(r.get('fib500'))}",
+            f"Fibo 62%: {price_or_wait(r.get('fib618'))}",
+            "",
+            "🛡️ RISIKO & TARGET",
+            f"Stop Loss : {price_or_wait(r.get('stop_loss'))}",
+            f"Target 1  : {price_or_wait(r.get('target_1'))}",
+            f"Target 2  : {price_or_wait(r.get('target_2'))}",
+            "",
+            "📊 PENILAIAN",
+            f"Momentum : {r.get('momentum_score', 0)}/100",
+            f"Akumulasi: {r.get('accumulation_score', 0)}/100",
         ]))
 
-    footer = (
-        "ℹ️ Bukan perintah beli. Tunggu harga masuk zona + pantulan. "
-        "SL/target hanya perkiraan."
-    )
+    footer = chr(10).join([
+        "ℹ️ Bukan perintah beli.",
+        "Tunggu harga masuk zona dan memantul.",
+        divider,
+    ])
+
     messages = []
     current_blocks = []
-    # Batas internal 3.400 karakter memberi ruang aman di bawah limit Telegram.
+    # Batas internal 3.400 karakter agar aman dari batas pesan Telegram.
     for block in blocks:
-        candidate = "\n\n".join(header + current_blocks + [block] + [footer])
+        candidate = (chr(10) * 2).join(header + current_blocks + [block, footer])
         if len(candidate) > 3400 and current_blocks:
-            messages.append("\n\n".join(header + current_blocks + [footer]))
+            messages.append((chr(10) * 2).join(header + current_blocks + [footer]))
             current_blocks = [block]
         else:
             current_blocks.append(block)
-    if current_blocks or not messages:
-        messages.append("\n\n".join(header + current_blocks + [footer]))
-    return messages
 
+    if current_blocks or not messages:
+        messages.append((chr(10) * 2).join(header + current_blocks + [footer]))
+    return messages
 
 # ============================================================
 # PROSES UTAMA
