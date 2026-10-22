@@ -993,21 +993,24 @@ def make_top10_telegram_messages(results):
         e2h = price_or_wait(r.get("entry2_high"))
         entry2 = f"{e2l}–{e2h}" if e2l != "Belum tersedia" and e2h != "Belum tersedia" else "Belum tersedia; tunggu koreksi kedua valid"
         blocks.append("\\n".join([
-            f"{i}. {r.get('ticker', '?')} | Skor {r.get('score', 0)}/100{warning}",
-            f"💰 Harga {price_or_wait(r.get('price'))} | {r.get('signal', 'PANTAU')}",
-            f"🎯 Entry 1: {entry1}",
-            f"   {r.get('entry_status', 'Tunggu pantulan')}",
-            f"🔄 Entry 2: {entry2}",
-            f"   {r.get('entry2_status', 'Belum aktif')}",
-            f"🔎 Tahap koreksi: {r.get('correction_stage', 0)}",
-            f"📍 Support: {price_or_wait(r.get('support20'))} | Fib 38/50/62: {price_or_wait(r.get('fib382'))}/{price_or_wait(r.get('fib500'))}/{price_or_wait(r.get('fib618'))}",
-            f"🛑 SL: {price_or_wait(r.get('stop_loss'))} | 🎯 T1: {price_or_wait(r.get('target_1'))} | T2: {price_or_wait(r.get('target_2'))}",
-            f"📊 Momentum {r.get('momentum_score', 0)}/100 | Akumulasi {r.get('accumulation_score', 0)}/100",
+            f"{i}. {r.get('ticker', '?')}  |  Skor {r.get('score', 0)}/100{warning}",
+            f"Harga   : {price_or_wait(r.get('price'))}  |  {r.get('signal', 'PANTAU')}",
+            "",
+            f"ENTRY 1 : {entry1}",
+            f"  {r.get('entry_status', 'Tunggu pantulan')}",
+            f"ENTRY 2 : {entry2}",
+            f"  {r.get('entry2_status', 'Belum aktif')}",
+            "",
+            f"Support : {price_or_wait(r.get('support20'))}",
+            f"Fibo    : 38% {price_or_wait(r.get('fib382'))}  |  50% {price_or_wait(r.get('fib500'))}  |  62% {price_or_wait(r.get('fib618'))}",
+            f"SL      : {price_or_wait(r.get('stop_loss'))}",
+            f"Target  : T1 {price_or_wait(r.get('target_1'))}  |  T2 {price_or_wait(r.get('target_2'))}",
+            f"Momentum: {r.get('momentum_score', 0)}/100  |  Akumulasi: {r.get('accumulation_score', 0)}/100",
         ]))
 
     footer = (
-        "ℹ️ Bukan perintah beli. Cek harga terkini; entry hanya jika harga masuk zona dan memantul. "
-        "SL/T1/T2 adalah perkiraan, bukan jaminan."
+        "ℹ️ Bukan perintah beli. Tunggu harga masuk zona + pantulan. "
+        "SL/target hanya perkiraan."
     )
     messages = []
     current_blocks = []
