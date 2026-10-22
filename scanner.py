@@ -2,8 +2,6 @@ import json
 import os
 import re
 import time
-import xml.etree.ElementTree as ET
-from urllib.parse import quote_plus
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -33,10 +31,7 @@ TIMEZONE = "Asia/Jakarta"
 TOP_N = 10
 MAX_RISK_PER_TRADE_PCT = 1.0
 MIN_REWARD_RISK = 1.5
-DEFAULT_CAPITAL = 10_000_000
-ENTRY1_CAPITAL_PCT = 0.60
-ENTRY2_CAPITAL_PCT = 0.40
-NEWS_TIMEOUT_SECONDS = 5
+DEFAULT_CAPITAL = 20_000_000
 RUN_BACKTEST = os.getenv("RUN_BACKTEST", "0").strip() == "1"
 BACKTEST_TICKERS_LIMIT = 30
 BACKTEST_FORWARD_DAYS = 5
@@ -418,7 +413,7 @@ def analyze_stock(ticker, data):
     if pd.notna(near_resistance_pct) and 0 <= near_resistance_pct <= 5: momentum_score += 15
     momentum_score = min(100, momentum_score)
 
-    # H/K: risk/reward dan ukuran posisi simulasi internal.
+    # H/K: risk/reward dan ukuran posisi simulasi berbasis modal Rp20 juta.
     risk_per_share = max(price - stop_loss, 0.0)
     reward_per_share = max(target_1 - price, 0.0)
     reward_risk = reward_per_share / risk_per_share if risk_per_share > 0 else 0.0
@@ -552,12 +547,10 @@ def send_telegram(message):
 # FORMAT HARGA RUPIAH
 # ============================================================
 def format_rupiah(value):
-    try:
-        if not np.isfinite(float(value)):
-            return "Belum tersedia"
-        return f"Rp{float(value):,.0f}".replace(",", ".")
-    except (TypeError, ValueError):
-        return "Belum tersedia"
+    return (
+        f"Rp{value:,.0f}"
+        .replace(",", ".")
+    )
 
 
 # ============================================================
@@ -640,7 +633,8 @@ def make_telegram_message(result):
         f"Target 2 indikatif: "
         f"{format_rupiah(result['target_2'])}\n"
         f"Reward/risk ke Target 1: {result.get('reward_risk', 0):.2f}x\n"
-        f"Lot simulasi: {result.get('suggested_lot', 0)} lot\n"
+        f"Lot simulasi (modal Rp{DEFAULT_CAPITAL:,.0f}, risiko max {MAX_RISK_PER_TRADE_PCT:.1f}%): {result.get('suggested_lot', 0)} lot\n"
+        f"Perkiraan modal terpakai: {format_rupiah(result.get('capital_used', 0))}\n"
         f"Estimasi risiko ke stop loss: {format_rupiah(result.get('estimated_trade_risk', 0))}\n\n"
 
         f"Tanggal candle: "
@@ -725,135 +719,75 @@ def print_top_lists(results):
 
 
 def make_top10_telegram_message(results):
-    """Buat satu pesan Telegram TOP 10, termasuk berita dan sentimen ringkas."""
+    """Buat satu pesan Telegram TOP 10 yang ringkas dan mudah dibaca."""
     ranked = sorted(
         results,
-        key=lambda r: (r.get("score", 0), r.get("momentum_score", 0),
-                       r.get("accumulation_score", 0)),
+        key=lambda r: (
+            r.get("score", 0),
+            r.get("momentum_score", 0),
+            r.get("accumulation_score", 0),
+        ),
         reverse=True,
     )[:TOP_N]
+
+    def price_or_wait(value):
+        try:
+            number = float(value)
+            if np.isfinite(number) and number > 0:
+                return format_rupiah(number)
+        except (TypeError, ValueError):
+            pass
+        return "Belum tersedia"
 
     now = datetime.now(ZoneInfo(TIMEZONE))
     lines = [
         f"🏆 TOP {len(ranked)} SAHAM BEI",
-        f"Waktu scan: {now:%d-%m-%Y %H:%M} WIB",
+        f"📅 {now:%d-%m-%Y %H:%M} WIB",
         "Urutan: skor teknikal → momentum → akumulasi",
-        "Modal tidak ditampilkan. Entry adalah rencana indikatif, bukan perintah beli.",
         "",
     ]
 
     for i, r in enumerate(ranked, start=1):
         warning = " ⚠️ FALSE BREAKOUT" if r.get("false_breakout", False) else ""
+        entry_low = price_or_wait(r.get("entry_low"))
+        entry_high = price_or_wait(r.get("entry_high"))
+        if entry_low != "Belum tersedia" and entry_high != "Belum tersedia":
+            entry1 = f"{entry_low}–{entry_high}"
+        else:
+            entry1 = "Tunggu konfirmasi"
+
+        entry_status = str(r.get("entry_status", "Perlu konfirmasi"))
+        if r.get("false_breakout", False):
+            entry2 = "Hindari dulu; risiko false breakout"
+        elif r.get("watch_only", False):
+            entry2 = "Tunggu harga lebih ideal"
+        elif "pullback" in entry_status.lower() or "pantul" in entry_status.lower():
+            entry2 = "Tunggu pullback/pantulan, jangan kejar harga"
+        else:
+            entry2 = "Tunggu konfirmasi dan pantulan support"
+
         lines.extend([
-            f"{i}. {r['ticker']} — skor {r.get('score', 0)}/100{warning}",
-            f"   Harga: {format_rupiah(r['price'])} | Sinyal: {r['signal']}",
-            f"   Momentum: {r.get('momentum_score', 0)}/100 | Akumulasi: {r.get('accumulation_score', 0)}/100",
-            f"   RSI: {r.get('rsi', 0):.1f} | Volume: {r.get('volume_ratio', 0):.2f}x",
-            f"   Area entry: {format_entry_area(r)}",
-            f"   {format_entry_plan(r).replace(chr(10), chr(10) + '   ')}",
-            f"   Stop loss: {format_rupiah(r['stop_loss'])} | Target: {format_rupiah(r['target_1'])} / {format_rupiah(r['target_2'])}",
-            f"   Berita: {r.get('news_title', 'Belum diperiksa')}",
-            f"   Sentimen judul: {r.get('news_sentiment', 'TIDAK TERSEDIA')}",
-            (f"   Link: {r['news_url']}" if r.get("news_url") else ""),
+            f"{i}. {r.get('ticker', '?')} | Skor {r.get('score', 0)}/100{warning}",
+            f"💰 Harga {price_or_wait(r.get('price'))} | {r.get('signal', 'PANTAU')}",
+            f"🎯 Entry 1: {entry1}",
+            f"🔄 Entry 2: {entry2}",
+            f"🛑 SL: {price_or_wait(r.get('stop_loss'))} | 🎯 T1: {price_or_wait(r.get('target_1'))} | T2: {price_or_wait(r.get('target_2'))}",
+            f"📊 Momentum {r.get('momentum_score', 0)}/100 | Akumulasi {r.get('accumulation_score', 0)}/100",
             "",
         ])
 
     lines.append(
-        "Catatan: sentimen hanya pencocokan kata pada judul, bukan analisis AI dan dapat salah. "
-        "Berita bisa tidak relevan/terlambat. Data harga Yahoo Finance dapat terlambat. "
-        "Skor akumulasi adalah proksi harga-volume, bukan bukti aktivitas bandar. "
-        "Verifikasi berita dan harga sebelum mengambil keputusan."
+        "ℹ️ TOP 10 adalah peringkat skor, bukan perintah beli. "
+        "Data Yahoo Finance bisa terlambat. Entry 1/2, SL, dan target hanya perkiraan teknikal; "
+        "cek harga terkini dan konfirmasi support sebelum transaksi."
     )
-    # Keep Telegram below the message size limit; avoid cutting in the middle of a stock.
-    message = "\\n".join(line for line in lines if line is not None)
-    if len(message) > 3900:
-        compact = [
-            f"🏆 TOP {len(ranked)} SAHAM BEI — {now:%d-%m-%Y %H:%M} WIB",
-            "Peringkat tetap berdasarkan skor teknikal, momentum, akumulasi.",
-        ]
-        for i, r in enumerate(ranked, start=1):
-            compact.append(
-                f"{i}. {r['ticker']} skor {r.get('score',0)} | Harga {format_rupiah(r['price'])} | "
-                f"Entry {format_entry_area(r)} | SL {format_rupiah(r['stop_loss'])} | "
-                f"T1 {format_rupiah(r['target_1'])} | Sentimen {r.get('news_sentiment','N/A')} | "
-                f"Berita: {r.get('news_title','N/A')[:100]}"
-            )
-        compact.append("Sentimen otomatis berbasis kata kunci; periksa berita asli sebelum bertindak.")
-        message = "\\n".join(compact)
+    message = "\n".join(lines)
+    if len(message) > 4000:
+        compact_lines = [line for line in lines if not line.startswith("📊 Momentum")]
+        message = "\n".join(compact_lines)
+    if len(message) > 4000:
+        message = message[:3950] + "\n\nPesan dipersingkat agar sesuai batas Telegram."
     return message
-
-# ============================================================
-# BERITA TERBARU + SENTIMEN BERBASIS KATA KUNCI (TANPA API BERBAYAR)
-# ============================================================
-POSITIVE_NEWS_WORDS = (
-    "laba naik", "laba meningkat", "pendapatan naik", "untung", "profit naik",
-    "dividen", "kontrak baru", "ekspansi", "akuisisi", "buyback", "naik kelas",
-    "positive", "growth", "record high", "upgrade", "surge", "rises", "beats estimates",
-    "new project", "new contract", "profit increases", "revenue growth"
-)
-NEGATIVE_NEWS_WORDS = (
-    "rugi", "kerugian", "laba turun", "pendapatan turun", "gagal bayar",
-    "pailit", "bangkrut", "denda", "sanksi", "digugat", "kasus", "investigasi",
-    "suspend", "delisting", "penurunan", "negative", "fraud", "default",
-    "lawsuit", "investigation", "fine", "loss widens", "downgrade", "falls sharply"
-)
-
-def classify_news_sentiment(text):
-    """Klasifikasi sederhana dari kata di judul; bukan model AI dan bisa keliru."""
-    text = (text or "").lower()
-    pos = sum(1 for word in POSITIVE_NEWS_WORDS if word in text)
-    neg = sum(1 for word in NEGATIVE_NEWS_WORDS if word in text)
-    if neg > pos:
-        return "NEGATIF"
-    if pos > neg:
-        return "POSITIF"
-    return "NETRAL"
-
-def fetch_latest_news(ticker):
-    """Ambil maksimal satu judul berita Google News RSS untuk ticker BEI."""
-    query = quote_plus(f'"{ticker}" saham')
-    url = f"https://news.google.com/rss/search?q={query}&hl=id&gl=ID&ceid=ID:id"
-    try:
-        response = requests.get(
-            url,
-            timeout=NEWS_TIMEOUT_SECONDS,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; BEIStockScanner/1.0)"}
-        )
-        response.raise_for_status()
-        root = ET.fromstring(response.content)
-        item = root.find("./channel/item")
-        if item is None:
-            return {"news_title": "Belum ada berita ditemukan", "news_url": "",
-                    "news_sentiment": "NETRAL"}
-        title = (item.findtext("title") or "").strip()
-        link = (item.findtext("link") or "").strip()
-        # Hapus nama publisher setelah pemisah terakhir bila ada; pertahankan judul jika ambigu.
-        sentiment = classify_news_sentiment(title)
-        return {"news_title": title[:180] or "Judul tidak tersedia",
-                "news_url": link, "news_sentiment": sentiment}
-    except Exception as exc:
-        print(f"BERITA {ticker}: gagal diambil ({exc})")
-        return {"news_title": "Berita tidak tersedia saat scan",
-                "news_url": "", "news_sentiment": "TIDAK TERSEDIA"}
-
-def format_entry_area(result):
-    low, high = result.get("entry_low", np.nan), result.get("entry_high", np.nan)
-    if np.isfinite(low) and np.isfinite(high):
-        return f"{format_rupiah(low)} - {format_rupiah(high)}"
-    return "Belum tersedia; tunggu konfirmasi teknikal"
-
-def format_entry_plan(result):
-    low, high = result.get("entry_low", np.nan), result.get("entry_high", np.nan)
-    if not (np.isfinite(low) and np.isfinite(high) and low > 0 and high > 0):
-        return ("Entry 1: Belum tersedia\n"
-                "Entry 2: Jangan tambah posisi sebelum area support dan pantulan terkonfirmasi")
-    entry1_low, entry1_high = low, high
-    # Entry 2 hanya area pantau 2% di bawah area entry, bukan sinyal beli otomatis.
-    entry2_low, entry2_high = low * 0.98, high * 0.98
-    return (f"Entry 1 (rencana awal): {format_rupiah(entry1_low)} - {format_rupiah(entry1_high)}\n"
-            f"Entry 2 (pantau support): {format_rupiah(entry2_low)} - {format_rupiah(entry2_high)}\n"
-            "Entry 2 hanya dipertimbangkan jika support bertahan dan harga memantul; bukan otomatis saat harga turun.")
-
 # ============================================================
 # PROSES UTAMA
 # ============================================================
@@ -986,10 +920,6 @@ def main():
             f"Mengirim TOP {len(top_ranked)} saham terbaik ke Telegram "
             "(peringkat skor, bukan hanya kandidat entry)."
         )
-        print("Mengambil berita terbaru untuk saham TOP 10 (RSS; tanpa API berbayar)...")
-        for news_result in top_ranked:
-            news_result.update(fetch_latest_news(news_result["ticker"]))
-            time.sleep(0.15)
         if send_telegram(make_top10_telegram_message(top_ranked)):
             notifications_sent = 1
             print("NOTIFIKASI TOP 10 TERKIRIM: satu pesan Telegram.")
