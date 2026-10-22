@@ -193,6 +193,116 @@ def fetch_history(ticker):
 
 
 # ============================================================
+# DETEKSI KOREKSI BERURUTAN
+# ============================================================
+def detect_current_correction_stage(close, high, low, ema50, atr14, lookback=90):
+    """Deteksi koreksi aktif ke-1/ke-2 dalam struktur uptrend terkini.
+
+    Koreksi dihitung setelah penurunan minimum dari puncak lokal dan dianggap
+    selesai jika harga pulih/menembus kembali puncak sebelumnya. Ini pendekatan
+    teknikal heuristik, bukan identifikasi swing yang pasti.
+    """
+    n = len(close)
+    if n < 30 or atr14 <= 0:
+        return 0, 0.0
+
+    start = max(1, n - lookback)
+    threshold_pct = max(0.025, min(0.05, 0.8 * atr14 / max(float(close.iloc[-1]), 0.01)))
+    completed = 0
+    peak = float(high.iloc[start - 1])
+    active = False
+    trough = float(low.iloc[start - 1])
+    current_drawdown_pct = 0.0
+
+    for i in range(start, n):
+        hi = float(high.iloc[i])
+        lo = float(low.iloc[i])
+        cl = float(close.iloc[i])
+        ema50_i = float(ema50.iloc[i]) if pd.notna(ema50.iloc[i]) else np.nan
+
+        if not active:
+            if hi >= peak:
+                peak = hi
+            dd = (peak - cl) / peak if peak > 0 else 0.0
+            # Hanya hitung koreksi yang tidak terlalu dalam; penurunan >12%
+            # dianggap struktur berisiko/berpotensi perubahan tren, bukan pullback biasa.
+            if threshold_pct <= dd <= 0.12:
+                active = True
+                trough = lo
+                current_drawdown_pct = dd * 100
+        else:
+            trough = min(trough, lo)
+            current_drawdown_pct = ((peak - cl) / peak) * 100 if peak > 0 else 0.0
+            # Koreksi lebih dari 12% tidak diperlakukan sebagai pullback normal.
+            if current_drawdown_pct > 12.0:
+                active = False
+                completed = 0
+                peak = hi
+                trough = lo
+                current_drawdown_pct = 0.0
+            # Koreksi selesai saat penutupan kembali ke puncak sebelumnya.
+            elif cl >= peak * 1.002:
+                completed += 1
+                active = False
+                peak = max(hi, cl)
+                trough = lo
+                current_drawdown_pct = 0.0
+            # Tren dianggap rusak bila penutupan jatuh jauh di bawah EMA50.
+            elif pd.notna(ema50_i) and cl < ema50_i * 0.95:
+                active = False
+                completed = 0
+                peak = hi
+                trough = lo
+                current_drawdown_pct = 0.0
+
+    if not active:
+        return 0, 0.0
+    return min(completed + 1, 3), max(0.0, current_drawdown_pct)
+
+
+def build_confluence_pullback_zone(price, atr14, ema9_now, ema21_now,
+                                   support20, fib382, fib500, fib618):
+    """Bangun zona koreksi dari konfluensi minimal dua level teknikal."""
+    levels = [
+        ("EMA9", ema9_now), ("EMA21", ema21_now),
+        ("Support20", support20), ("Fib38.2%", fib382),
+        ("Fib50%", fib500), ("Fib61.8%", fib618),
+    ]
+    # Fokus pada level yang masih relevan terhadap harga sekarang.
+    candidates = [(name, float(value)) for name, value in levels
+                  if np.isfinite(value) and value > 0
+                  # Level di atas harga secara material lebih mungkin menjadi
+                  # resistance, jadi tidak dipakai sebagai zona support pullback.
+                  and float(value) <= price + 0.15 * atr14
+                  and abs(float(value) - price) <= 1.5 * atr14]
+    if len(candidates) < 2:
+        return np.nan, np.nan, "Konfluensi EMA/support/Fibonacci belum cukup kuat"
+
+    # Cari kelompok level yang paling rapat; minimal dua level harus berdekatan.
+    best_group = []
+    best_distance = float("inf")
+    tolerance = max(0.35 * atr14, price * 0.005)
+    for _, anchor in candidates:
+        group = [(name, value) for name, value in candidates
+                 if abs(value - anchor) <= tolerance]
+        if len(group) > len(best_group):
+            best_group = group
+            best_distance = abs(anchor - price)
+        elif len(group) == len(best_group) and abs(anchor - price) < best_distance:
+            best_group = group
+            best_distance = abs(anchor - price)
+
+    if len(best_group) < 2:
+        return np.nan, np.nan, "Level teknikal belum membentuk konfluensi minimal dua acuan"
+
+    anchor = float(np.mean([value for _, value in best_group]))
+    zone_low = max(0.01, anchor - 0.25 * atr14)
+    zone_high = anchor + 0.25 * atr14
+    names = "/".join(name for name, _ in best_group)
+    return zone_low, zone_high, f"Konfluensi {names}; tunggu pantulan terkonfirmasi"
+
+
+# ============================================================
 # ANALISIS TEKNIKAL DAN PERHITUNGAN SKOR
 # ============================================================
 def analyze_stock(ticker, data):
@@ -392,72 +502,78 @@ def analyze_stock(ticker, data):
 
     # Penentuan is_candidate dipindahkan ke bawah, setelah semua variabel dihitung.
 
-    # Area Entry 1 (breakout) dan Entry 2 (pullback support/Fibonacci).
-    # Semua area indikatif; tidak menganggap harga penutupan sebagai harga real-time.
+    # Entry 1 = koreksi pertama; Entry 2 = koreksi kedua.
+    # Keduanya hanya muncul jika koreksi aktif terdeteksi dan ada konfluensi
+    # minimal dua acuan dari EMA9/EMA21/support/Fibonacci.
     entry1_low = np.nan
     entry1_high = np.nan
     entry2_low = np.nan
     entry2_high = np.nan
-    entry_status = "Belum ada area entry yang memenuhi syarat"
-    entry2_status = "Belum ada area pullback yang memenuhi syarat"
+    entry_status = "Belum ada koreksi pertama yang valid"
+    entry2_status = "Belum ada koreksi kedua yang valid"
 
-    # Support dari 20 candle terakhir sebelum/termasuk candle terakhir.
     support20 = float(low.tail(20).min()) if len(low) >= 20 else float(low.min())
 
-    # Fibonacci dari swing 60 candle terakhir.
-    swing_high = float(high.tail(60).max())
-    swing_low = float(low.tail(60).min())
+    # Fibonacci dihitung dari swing low yang terjadi sebelum swing high terbaru,
+    # supaya level retracement merepresentasikan gerak naik, bukan urutan acak.
+    fib_window = min(60, len(data))
+    high_window = high.tail(fib_window)
+    low_window = low.tail(fib_window)
+    swing_high_idx = high_window.idxmax()
+    swing_high = float(high_window.loc[swing_high_idx])
+    low_before_high = low_window.loc[:swing_high_idx]
+    swing_low = float(low_before_high.min()) if len(low_before_high) else float(low_window.min())
     swing_range = swing_high - swing_low
-    fib382 = swing_high - (0.382 * swing_range) if swing_range > 0 else np.nan
-    fib500 = swing_high - (0.500 * swing_range) if swing_range > 0 else np.nan
-    fib618 = swing_high - (0.618 * swing_range) if swing_range > 0 else np.nan
-
-    if false_breakout:
-        entry_status = "Hindari dahulu: risiko false breakout"
-        entry2_status = "Hindari dahulu sampai harga stabil kembali"
-    elif watch_only:
-        entry_status = "PANTAU DULU: jangan mengejar harga"
-        entry2_status = "Tunggu koreksi dan konfirmasi pantulan"
+    if swing_range > 0 and swing_high_idx != low_window.index[0]:
+        fib382 = swing_high - (0.382 * swing_range)
+        fib500 = swing_high - (0.500 * swing_range)
+        fib618 = swing_high - (0.618 * swing_range)
     else:
-        # ENTRY 1: area breakout berpusat di resistance 20 hari.
-        # Jika breakout sudah terjadi, gunakan resistance sebagai area retest;
-        # jika belum, tampilkan area yang perlu ditembus.
-        if pd.notna(resistance20) and resistance20 > 0 and (breakout20 or prebreakout):
-            entry1_low = float(resistance20)
-            entry1_high = float(resistance20 + (0.25 * atr14))
-            if breakout20:
-                entry_status = "Breakout terdeteksi; idealnya tunggu retest/konfirmasi volume"
-            else:
-                entry_status = "Tunggu penutupan menembus resistance dengan volume"
-        elif price_above_ema21 and volume_strong and trend_up:
-            # Tidak ada resistance yang dekat/valid: jangan membuat level breakout palsu.
-            entry_status = "Belum ada breakout dekat; pantau resistance berikutnya"
+        fib382 = fib500 = fib618 = np.nan
 
-        # ENTRY 2: zona pullback yang menggabungkan EMA21, support, dan Fibonacci.
-        # Pilih level teknikal yang paling dekat di bawah harga, bila ada.
-        pullback_candidates = [
-            float(x) for x in (ema21_now, support20, fib382, fib500, fib618)
-            if np.isfinite(x) and x > 0 and x <= price
-        ]
-        if pullback_candidates and price_above_ema21 and trend_up:
-            # Prioritaskan level terdekat di bawah harga, tetapi hindari entry terlalu jauh.
-            pullback_anchor = max(pullback_candidates)
-            if (price - pullback_anchor) <= 2.0 * atr14:
-                entry2_low = max(0.01, pullback_anchor - (0.25 * atr14))
-                entry2_high = min(price, pullback_anchor + (0.25 * atr14))
-                if entry2_low <= entry2_high:
-                    entry2_status = (
-                        "Tunggu harga masuk zona lalu konfirmasi pantulan; "
-                        "jangan beli hanya karena menyentuh area"
-                    )
-            else:
-                entry2_status = "Level pullback terlalu jauh; tunggu struktur harga baru"
-        else:
-            entry2_status = "Belum ada zona pullback yang valid; tunggu support terbentuk"
+    correction_stage, correction_drawdown_pct = detect_current_correction_stage(
+        close, high, low, ema50, atr14
+    )
+    zone_low, zone_high, confluence_status = build_confluence_pullback_zone(
+        price, atr14, ema9_now, ema21_now, support20, fib382, fib500, fib618
+    )
 
-        # Pertahankan field lama untuk kompatibilitas dengan fungsi lain.
-        entry_low = entry1_low
-        entry_high = entry1_high
+    # Entry hanya valid dalam tren menengah yang masih terjaga dan tidak sedang
+    # menghadapi false breakout/overheating. Stage 3+ tidak dipaksakan menjadi E1/E2.
+    structure_ok = bool(trend_medium_up and price >= ema50_now * 0.97 and not false_breakout)
+    if not structure_ok:
+        entry_status = "Tunda: struktur tren belum cukup aman untuk entry koreksi"
+        entry2_status = "Tunda: struktur tren belum cukup aman untuk entry koreksi"
+    elif correction_stage == 0:
+        entry_status = "Menunggu koreksi pertama; jangan mengejar harga naik"
+        entry2_status = "Menunggu koreksi kedua setelah koreksi pertama selesai"
+    elif correction_stage >= 3:
+        entry_status = "Koreksi ke-3 atau lebih; tidak dilabeli Entry 1/2"
+        entry2_status = "Koreksi ke-3 atau lebih; tunggu struktur tren baru"
+    elif not (np.isfinite(zone_low) and np.isfinite(zone_high)):
+        entry_status = confluence_status
+        entry2_status = confluence_status
+    elif watch_only:
+        entry_status = "Tunda: harga/RSI terlalu panas; tunggu kondisi normal"
+        entry2_status = "Tunda: harga/RSI terlalu panas; tunggu kondisi normal"
+    elif correction_stage == 1:
+        entry1_low, entry1_high = float(zone_low), float(zone_high)
+        entry_status = (
+            f"Koreksi pertama terdeteksi ({correction_drawdown_pct:.1f}% dari puncak); "
+            f"tunggu pantulan di zona. {confluence_status}"
+        )
+        entry2_status = "Belum waktunya: Entry 2 hanya setelah koreksi kedua terdeteksi"
+    elif correction_stage == 2:
+        entry2_low, entry2_high = float(zone_low), float(zone_high)
+        entry_status = "Koreksi pertama sudah terlewati; bukan sinyal Entry 1 baru"
+        entry2_status = (
+            f"Koreksi kedua terdeteksi ({correction_drawdown_pct:.1f}% dari puncak); "
+            f"tunggu pantulan di zona. {confluence_status}"
+        )
+
+    # Field lama dipertahankan agar fungsi lain tetap kompatibel.
+    entry_low = entry1_low if np.isfinite(entry1_low) else entry2_low
+    entry_high = entry1_high if np.isfinite(entry1_high) else entry2_high
 
     stop_loss = max(0.0, price - (1.5 * atr14))
     target_1 = price + (2.3 * atr14)
@@ -553,6 +669,8 @@ def analyze_stock(ticker, data):
         "fib618": float(fib618) if np.isfinite(fib618) else np.nan,
         "entry_status": entry_status,
         "entry2_status": entry2_status,
+        "correction_stage": int(correction_stage),
+        "correction_drawdown_pct": float(correction_drawdown_pct),
         "stop_loss": float(stop_loss),
         "target_1": float(target_1),
         "target_2": float(target_2),
@@ -790,8 +908,8 @@ def print_top_lists(results):
 
 
 
-def make_top10_telegram_message(results):
-    """Buat satu pesan Telegram TOP 10 yang ringkas dan mudah dibaca."""
+def make_top10_telegram_messages(results):
+    """Buat pesan TOP 10 menjadi beberapa bagian agar tidak terpotong Telegram."""
     ranked = sorted(
         results,
         key=lambda r: (
@@ -812,61 +930,52 @@ def make_top10_telegram_message(results):
         return "Belum tersedia"
 
     now = datetime.now(ZoneInfo(TIMEZONE))
-    lines = [
+    header = [
         f"🏆 TOP {len(ranked)} SAHAM BEI",
         f"📅 {now:%d-%m-%Y %H:%M} WIB",
         "Urutan: skor teknikal → momentum → akumulasi",
-        "",
     ]
-
+    blocks = []
     for i, r in enumerate(ranked, start=1):
         warning = " ⚠️ FALSE BREAKOUT" if r.get("false_breakout", False) else ""
-        entry1_low = price_or_wait(r.get("entry1_low", r.get("entry_low")))
-        entry1_high = price_or_wait(r.get("entry1_high", r.get("entry_high")))
-        if entry1_low != "Belum tersedia" and entry1_high != "Belum tersedia":
-            entry1 = f"{entry1_low}–{entry1_high}"
-        else:
-            entry1 = "Belum tersedia; tunggu konfirmasi breakout"
-
-        entry2_low = price_or_wait(r.get("entry2_low"))
-        entry2_high = price_or_wait(r.get("entry2_high"))
-        if entry2_low != "Belum tersedia" and entry2_high != "Belum tersedia":
-            entry2 = f"{entry2_low}–{entry2_high}"
-        else:
-            entry2 = "Belum tersedia; tunggu pullback valid"
-
-        entry_status = str(r.get("entry_status", "Perlu konfirmasi"))
-        entry2_status = str(r.get("entry2_status", "Perlu konfirmasi"))
-        support = price_or_wait(r.get("support20"))
-        fib382 = price_or_wait(r.get("fib382"))
-        fib500 = price_or_wait(r.get("fib500"))
-        fib618 = price_or_wait(r.get("fib618"))
-
-        lines.extend([
+        e1l = price_or_wait(r.get("entry1_low", r.get("entry_low")))
+        e1h = price_or_wait(r.get("entry1_high", r.get("entry_high")))
+        entry1 = f"{e1l}–{e1h}" if e1l != "Belum tersedia" and e1h != "Belum tersedia" else "Belum tersedia; tunggu koreksi pertama valid"
+        e2l = price_or_wait(r.get("entry2_low"))
+        e2h = price_or_wait(r.get("entry2_high"))
+        entry2 = f"{e2l}–{e2h}" if e2l != "Belum tersedia" and e2h != "Belum tersedia" else "Belum tersedia; tunggu koreksi kedua valid"
+        blocks.append("\n".join([
             f"{i}. {r.get('ticker', '?')} | Skor {r.get('score', 0)}/100{warning}",
             f"💰 Harga {price_or_wait(r.get('price'))} | {r.get('signal', 'PANTAU')}",
-            f"🎯 Entry 1 (breakout): {entry1}",
-            f"   Status: {entry_status}",
-            f"🔄 Entry 2 (pullback): {entry2}",
-            f"   Status: {entry2_status}",
-            f"📍 Support: {support} | Fib 38,2%: {fib382} | 50%: {fib500} | 61,8%: {fib618}",
+            f"🎯 Entry 1 (koreksi pertama): {entry1}",
+            f"   Status: {r.get('entry_status', 'Perlu konfirmasi')}",
+            f"🔄 Entry 2 (koreksi kedua): {entry2}",
+            f"   Status: {r.get('entry2_status', 'Perlu konfirmasi')}",
+            f"🔎 Tahap koreksi: {r.get('correction_stage', 0)} | Drawdown: {r.get('correction_drawdown_pct', 0):.1f}%",
+            f"📍 Support: {price_or_wait(r.get('support20'))} | Fib 38,2%: {price_or_wait(r.get('fib382'))} | 50%: {price_or_wait(r.get('fib500'))} | 61,8%: {price_or_wait(r.get('fib618'))}",
             f"🛑 SL: {price_or_wait(r.get('stop_loss'))} | 🎯 T1: {price_or_wait(r.get('target_1'))} | T2: {price_or_wait(r.get('target_2'))}",
             f"📊 Momentum {r.get('momentum_score', 0)}/100 | Akumulasi {r.get('accumulation_score', 0)}/100",
-            "",
-        ])
+        ]))
 
-    lines.append(
-        "ℹ️ TOP 10 adalah peringkat skor, bukan perintah beli. "
-        "Data Yahoo Finance bisa terlambat. Entry 1/2, SL, dan target hanya perkiraan teknikal; "
-        "cek harga terkini dan konfirmasi support sebelum transaksi."
+    footer = (
+        "ℹ️ TOP 10 adalah peringkat skor, bukan perintah beli. Data Yahoo Finance bisa terlambat. "
+        "Entry 1/2, SL, dan target hanya perkiraan teknikal; cek harga terkini dan konfirmasi pantulan."
     )
-    message = "\n".join(lines)
-    if len(message) > 4000:
-        compact_lines = [line for line in lines if not line.startswith("📊 Momentum")]
-        message = "\n".join(compact_lines)
-    if len(message) > 4000:
-        message = message[:3950] + "\n\nPesan dipersingkat agar sesuai batas Telegram."
-    return message
+    messages = []
+    current_blocks = []
+    # Batas internal 3.400 karakter memberi ruang aman di bawah limit Telegram.
+    for block in blocks:
+        candidate = "\n\n".join(header + current_blocks + [block] + [footer])
+        if len(candidate) > 3400 and current_blocks:
+            messages.append("\n\n".join(header + current_blocks + [footer]))
+            current_blocks = [block]
+        else:
+            current_blocks.append(block)
+    if current_blocks or not messages:
+        messages.append("\n\n".join(header + current_blocks + [footer]))
+    return messages
+
+
 # ============================================================
 # PROSES UTAMA
 # ============================================================
@@ -999,11 +1108,19 @@ def main():
             f"Mengirim TOP {len(top_ranked)} saham terbaik ke Telegram "
             "(peringkat skor, bukan hanya kandidat entry)."
         )
-        if send_telegram(make_top10_telegram_message(top_ranked)):
-            notifications_sent = 1
-            print("NOTIFIKASI TOP 10 TERKIRIM: satu pesan Telegram.")
+        telegram_messages = make_top10_telegram_messages(top_ranked)
+        sent_count = 0
+        for part_no, message in enumerate(telegram_messages, start=1):
+            if send_telegram(message):
+                sent_count += 1
+                print(f"NOTIFIKASI TOP 10 BAGIAN {part_no}/{len(telegram_messages)} TERKIRIM.")
+            else:
+                print(f"NOTIFIKASI TOP 10 BAGIAN {part_no}/{len(telegram_messages)} GAGAL dikirim.")
+        notifications_sent = sent_count
+        if sent_count == len(telegram_messages):
+            print(f"NOTIFIKASI TOP 10 TERKIRIM LENGKAP: {sent_count} pesan.")
         else:
-            print("NOTIFIKASI TOP 10 GAGAL dikirim.")
+            print(f"NOTIFIKASI TOP 10 BELUM LENGKAP: {sent_count}/{len(telegram_messages)} pesan.")
     else:
         print("Tidak ada hasil analisis; TOP 10 tidak dikirim.")
 
