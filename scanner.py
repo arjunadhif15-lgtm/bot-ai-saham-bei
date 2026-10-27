@@ -513,19 +513,52 @@ def analyze_stock(ticker, data):
         else "LEMAH"
     )
 
-    # False breakout: candle sempat melewati resistance, tetapi ditutup kembali di bawahnya,
-    # atau salah satu dari 3 candle terakhir menembus resistance lalu harga kini kembali di bawah.
+    # False breakout diperiksa memakai resistance yang memang tersedia pada tiap candle,
+    # bukan memakai resistance hari ini untuk menilai candle-candle lama (mengurangi bias).
+    # Peringatan aktif jika ada penolakan breakout baru-baru ini dan harga saat ini masih
+    # berada di bawah/tepat pada resistance.
     false_breakout = False
+    breakout_confirmed = False
+    prior_resistance_series = high.shift(1).rolling(20).max()
     if pd.notna(resistance20) and resistance20 > 0:
         rejected_today = today_high > resistance20 and price <= resistance20
-        recent_highs = high.iloc[-3:]
-        recent_closes = close.iloc[-3:]
-        recent_rejection = any(
-            float(h) > resistance20 and float(c) <= resistance20
-            for h, c in zip(recent_highs, recent_closes)
+
+        recent_rejection = False
+        recent_start = max(0, len(data) - 3)
+        for pos in range(recent_start, len(data)):
+            candle_resistance = prior_resistance_series.iloc[pos]
+            if pd.isna(candle_resistance) or candle_resistance <= 0:
+                continue
+            candle_high = float(high.iloc[pos])
+            candle_close = float(close.iloc[pos])
+            if candle_high > float(candle_resistance) and candle_close <= float(candle_resistance):
+                recent_rejection = True
+                break
+
+        previous_resistance = prior_resistance_series.iloc[-2] if len(prior_resistance_series) >= 2 else np.nan
+        returned_below = bool(
+            pd.notna(previous_resistance)
+            and previous_price > float(previous_resistance)
+            and price <= resistance20
         )
-        returned_below = previous_price > resistance20 and price <= resistance20
-        false_breakout = bool(rejected_today or recent_rejection or returned_below)
+        false_breakout = bool(
+            rejected_today
+            or returned_below
+            or (recent_rejection and price <= resistance20)
+        )
+
+        # Label breakout yang lebih ketat: penutupan melewati resistance dengan buffer,
+        # volume kuat, tren pendek naik, dan penutupan berada di bagian atas rentang candle.
+        candle_range = max(today_high - float(low.iloc[-1]), 0.0)
+        close_position = (price - float(low.iloc[-1])) / candle_range if candle_range > 0 else 0.0
+        breakout_confirmed = bool(
+            breakout20
+            and price >= resistance20 * 1.003
+            and volume_strong
+            and trend_up
+            and close_position >= 0.60
+            and not false_breakout
+        )
 
     overheated_rsi = rsi_now > MAX_RSI_ENTRY
     price_stretched = distance_above_ema9_pct > MAX_ABOVE_EMA9_PCT
@@ -571,8 +604,10 @@ def analyze_stock(ticker, data):
     # Kategori sinyal; false breakout diberi prioritas sebagai peringatan risiko.
     if false_breakout:
         signal = "WASPADA FALSE BREAKOUT"
-    elif breakout20 and volume_strong and trend_up:
+    elif breakout_confirmed:
         signal = "BREAKOUT TERKONFIRMASI"
+    elif breakout20:
+        signal = "BREAKOUT: TUNGGU KONFIRMASI"
     elif prebreakout:
         signal = "CALON BREAKOUT"
     elif accumulation:
@@ -709,6 +744,7 @@ def analyze_stock(ticker, data):
         "ema21": ema21_now,
         "ema50": ema50_now,
         "breakout20": bool(breakout20),
+        "breakout_confirmed": bool(breakout_confirmed),
         "prebreakout": bool(prebreakout),
         "accumulation": bool(accumulation),
         "accumulation_score": int(accumulation_score),
