@@ -19,6 +19,9 @@ STATE_FILE = os.path.join(BASE_DIR, "sent_notifications.json")
 
 MIN_SCORE = 75
 MIN_VOLUME_RATIO = 1.2
+# Filter likuiditas TOP 10 (estimasi nilai transaksi = Close x Volume)
+MIN_AVG_TURNOVER20_IDR = 1_000_000_000  # harus di atas Rp1 miliar/hari
+MIN_LATEST_TURNOVER_IDR = 5_000_000_000  # harus di atas Rp5 miliar pada candle terakhir
 MAX_RSI_ENTRY = 70.0  # RSI di atas ini diberi label PANTAU DULU
 MAX_ABOVE_EMA9_PCT = 3.0  # Harga >3% di atas EMA9 diberi label PANTAU DULU
 MAX_TICKERS = None  # None = pindai semua saham di DEFAULT_TICKERS
@@ -388,6 +391,26 @@ def analyze_stock(ticker, data):
     avg_vol_now = float(avg_volume20.iloc[-1]) if pd.notna(avg_volume20.iloc[-1]) else 0.0
     volume_ratio = float(volume.iloc[-1] / avg_vol_now) if avg_vol_now > 0 else 0.0
 
+    # Estimasi nilai transaksi harian (bukan turnover resmi bursa): Close x Volume.
+    # Rata-rata 20 sesi dihitung dari nilai transaksi setiap candle.
+    daily_turnover = (close * volume).replace([np.inf, -np.inf], np.nan)
+    latest_turnover = (
+        float(daily_turnover.iloc[-1])
+        if len(daily_turnover) and pd.notna(daily_turnover.iloc[-1])
+        else np.nan
+    )
+    avg_turnover20 = (
+        float(daily_turnover.tail(20).mean())
+        if len(daily_turnover.tail(20)) == 20 and daily_turnover.tail(20).notna().all()
+        else np.nan
+    )
+    liquidity_filter_pass = bool(
+        np.isfinite(avg_turnover20)
+        and np.isfinite(latest_turnover)
+        and avg_turnover20 > MIN_AVG_TURNOVER20_IDR
+        and latest_turnover > MIN_LATEST_TURNOVER_IDR
+    )
+
     # Resistance 20 hari: tertinggi 20 candle SEBELUM candle terakhir.
     prior_high20_series = high.shift(1).rolling(20).max()
     resistance20 = float(prior_high20_series.iloc[-1]) if pd.notna(prior_high20_series.iloc[-1]) else np.nan
@@ -679,6 +702,9 @@ def analyze_stock(ticker, data):
         "distance_above_ema9_pct": float(distance_above_ema9_pct),
         "watch_only": bool(watch_only),
         "volume_ratio": float(volume_ratio),
+        "latest_turnover_idr": float(latest_turnover) if np.isfinite(latest_turnover) else np.nan,
+        "avg_turnover20_idr": float(avg_turnover20) if np.isfinite(avg_turnover20) else np.nan,
+        "liquidity_filter_pass": bool(liquidity_filter_pass),
         "ema9": ema9_now,
         "ema21": ema21_now,
         "ema50": ema50_now,
@@ -1137,6 +1163,9 @@ def main():
             f"Sinyal={result['signal']} | "
             f"RSI={result['rsi']:.1f} | "
             f"Volume={result['volume_ratio']:.2f}x | "
+            f"Turnover={format_rupiah(result.get('latest_turnover_idr', 0))} | "
+            f"Avg20={format_rupiah(result.get('avg_turnover20_idr', 0))} | "
+            f"Likuiditas={'LOLOS' if result.get('liquidity_filter_pass', False) else 'GAGAL'} | "
             f"Akumulasi={result.get('accumulation_score', 0)}/100 | "
             f"Momentum={result.get('momentum_score', 0)}/100 | "
             f"R/R={result.get('reward_risk', 0):.2f}x",
@@ -1170,10 +1199,16 @@ def main():
     print("=" * 60)
     print_top_lists(all_results)
 
-    # Kirim maksimal 10 saham dengan skor tertinggi, walaupun kandidat entry = 0.
-    if all_results:
+    # Filter likuiditas diterapkan sebelum pemilihan TOP 10; ranking tetap sama.
+    eligible_liquidity = [r for r in all_results if r.get("liquidity_filter_pass", False)]
+    print(
+        f"Lolos filter likuiditas: {len(eligible_liquidity)} dari {len(all_results)} saham "
+        f"(rata-rata 20 sesi > Rp{MIN_AVG_TURNOVER20_IDR:,.0f}/hari dan "
+        f"nilai transaksi candle terakhir > Rp{MIN_LATEST_TURNOVER_IDR:,.0f})."
+    )
+    if eligible_liquidity:
         top_ranked = sorted(
-            all_results,
+            eligible_liquidity,
             key=lambda r: (
                 r.get("score", 0),
                 r.get("momentum_score", 0),
@@ -1182,8 +1217,8 @@ def main():
             reverse=True,
         )[:TOP_N]
         print(
-            f"Mengirim TOP {len(top_ranked)} saham terbaik ke Telegram "
-            "(peringkat skor, bukan hanya kandidat entry)."
+            f"Mengirim TOP {len(top_ranked)} saham yang lolos filter likuiditas "
+            "(ranking teknikal → momentum → akumulasi tetap)."
         )
         telegram_messages = make_top10_telegram_messages(top_ranked)
         sent_count = 0
@@ -1199,7 +1234,7 @@ def main():
         else:
             print(f"NOTIFIKASI TOP 10 BELUM LENGKAP: {sent_count}/{len(telegram_messages)} pesan.")
     else:
-        print("Tidak ada hasil analisis; TOP 10 tidak dikirim.")
+        print("Tidak ada saham yang memenuhi kedua filter likuiditas; TOP 10 tidak dikirim.")
 
     print(f"Pesan Telegram terkirim kali ini: {notifications_sent}")
     print("=" * 60)
