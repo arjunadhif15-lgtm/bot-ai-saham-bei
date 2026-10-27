@@ -675,12 +675,42 @@ def analyze_stock(ticker, data):
     entry_low = entry1_low if np.isfinite(entry1_low) else entry2_low
     entry_high = entry1_high if np.isfinite(entry1_high) else entry2_high
 
-    # Satu SL untuk kedua entry, di bawah zona Entry 2.
-    sl_buffer = max(0.25 * atr14, price * 0.005)
-    stop_loss = max(0.0, entry2_low - sl_buffer)
-    # Satu set target bersama; target tetap di atas harga saat pemindaian.
-    target_1 = price + (2.3 * atr14)
-    target_2 = max(price + (3.0 * atr14), target_1 + (0.5 * atr14))
+    # Stop loss berbasis zona Entry 2 dan support terdekat yang masih relevan.
+    # Support yang terlalu jauh tidak dipakai agar risiko tidak membengkak tanpa alasan.
+    sl_buffer = max(0.30 * atr14, price * 0.005)
+    support_candidates = []
+    for level in (support20, fib618, ema21_now, ema50_now):
+        try:
+            level = float(level)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(level) and 0 < level < entry2_low:
+            support_candidates.append(level)
+    nearby_supports = [s for s in support_candidates if (entry2_low - s) <= 2.0 * atr14]
+    structural_stop_base = max(nearby_supports) if nearby_supports else entry2_low
+    stop_loss = max(0.0, min(entry2_low, structural_stop_base) - sl_buffer)
+
+    # Target memakai resistance historis di atas harga jika ada; jika tidak,
+    # gunakan fallback berbasis ATR. Target harus tetap di atas harga saat scan.
+    historical_highs = high.iloc[:-1].tail(60) if len(high) > 1 else high.iloc[:0]
+    resistance_candidates = sorted({
+        float(v) for v in historical_highs
+        if pd.notna(v) and float(v) >= price + 0.80 * atr14
+    })
+    if resistance_candidates:
+        target_1 = resistance_candidates[0]
+    else:
+        target_1 = price + 1.8 * atr14
+    if target_1 <= price:
+        target_1 = price + 1.8 * atr14
+
+    next_resistances = [r for r in resistance_candidates if r >= target_1 + 0.50 * atr14]
+    if next_resistances:
+        target_2 = next_resistances[0]
+    else:
+        target_2 = max(price + 3.0 * atr14, target_1 + 0.75 * atr14)
+    if target_2 <= target_1:
+        target_2 = target_1 + max(0.50 * atr14, price * 0.01)
 
     # G: momentum awal sebelum breakout
     momentum_5d_pct = (price / float(close.iloc[-6]) - 1) * 100 if len(close) >= 6 and float(close.iloc[-6]) > 0 else 0.0
@@ -695,12 +725,16 @@ def analyze_stock(ticker, data):
     if pd.notna(near_resistance_pct) and 0 <= near_resistance_pct <= 5: momentum_score += 15
     momentum_score = min(100, momentum_score)
 
-    # Risiko dihitung dari Entry 1 (entry lebih tinggi = perhitungan konservatif).
+    # Rasio risiko/imbalan dihitung konservatif dari titik tengah Entry 1.
     entry1_mid = (entry1_low + entry1_high) / 2 if np.isfinite(entry1_low) and np.isfinite(entry1_high) else price
     risk_per_share = max(entry1_mid - stop_loss, 0.0)
     reward_per_share = max(target_1 - entry1_mid, 0.0)
     reward_risk = reward_per_share / risk_per_share if risk_per_share > 0 else 0.0
-    risk_reward_ok = bool(reward_risk >= MIN_REWARD_RISK)
+    entry2_mid = (entry2_low + entry2_high) / 2 if np.isfinite(entry2_low) and np.isfinite(entry2_high) else np.nan
+    entry2_risk = max(entry2_mid - stop_loss, 0.0) if np.isfinite(entry2_mid) else 0.0
+    entry2_reward = max(target_1 - entry2_mid, 0.0) if np.isfinite(entry2_mid) else 0.0
+    reward_risk_entry2 = entry2_reward / entry2_risk if entry2_risk > 0 else 0.0
+    risk_reward_ok = bool(reward_risk >= MIN_REWARD_RISK and target_1 > entry1_mid > stop_loss)
     risk_budget = DEFAULT_CAPITAL * MAX_RISK_PER_TRADE_PCT / 100
     risk_lot = int(risk_budget // (risk_per_share * 100)) if risk_per_share > 0 else 0
     capital_lot = int(DEFAULT_CAPITAL // (entry1_mid * 100)) if entry1_mid > 0 else 0
@@ -758,6 +792,7 @@ def analyze_stock(ticker, data):
         "momentum_early": bool(momentum_early),
         "momentum_score": int(momentum_score),
         "reward_risk": float(reward_risk),
+        "reward_risk_entry2": float(reward_risk_entry2),
         "risk_reward_ok": bool(risk_reward_ok),
         "risk_filter_pass": bool(risk_filter_pass),
         "suggested_lot": int(suggested_lot),
@@ -1077,6 +1112,8 @@ def make_top10_telegram_messages(results):
             "🎯 RENCANA BELI",
             f"Entry 1 : {entry1}",
             f"Entry 2 : {entry2}",
+            f"Status E1: {r.get('entry_status', 'Tunggu konfirmasi')}",
+            f"Status E2: {r.get('entry2_status', 'Belum aktif')}",
             "",
             "📍 LEVEL PENTING",
             f"Support : {price_or_wait(r.get('support20'))}",
@@ -1088,6 +1125,8 @@ def make_top10_telegram_messages(results):
             f"Stop Loss : {price_or_wait(r.get('stop_loss'))}",
             f"Target 1  : {price_or_wait(r.get('target_1'))}",
             f"Target 2  : {price_or_wait(r.get('target_2'))}",
+            f"Risk/Reward E1: {r.get('reward_risk', 0):.2f}x | E2: {r.get('reward_risk_entry2', 0):.2f}x",
+            f"Kelayakan R/R: {'Memenuhi batas' if r.get('risk_reward_ok', False) else 'Risiko/imbalan belum memenuhi batas'}",
             "",
             "📊 PENILAIAN",
             f"Momentum : {r.get('momentum_score', 0)}/100",
@@ -1096,7 +1135,8 @@ def make_top10_telegram_messages(results):
 
     footer = chr(10).join([
         "ℹ️ Bukan perintah beli.",
-        "Tunggu harga masuk zona dan memantul.",
+        "Zona entry perlu pantulan/konfirmasi; cek harga aktual.",
+        "Target memakai resistance historis bila tersedia; selain itu estimasi ATR.",
         divider,
     ])
 
