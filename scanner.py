@@ -1155,6 +1155,145 @@ def make_top10_telegram_messages(results):
         messages.append((chr(10) * 2).join(header + current_blocks + [footer]))
     return messages
 
+
+# ============================================================
+# MENYIMPAN HASIL TOP 10 KE SUPABASE
+# ============================================================
+def save_top10_to_supabase(results, scan_date):
+    """Simpan TOP 10 ke tabel public.top10_scans melalui Supabase REST API.
+
+    Kredensial wajib berasal dari environment/GitHub Actions Secrets.
+    Service Role Key tidak boleh dimasukkan ke aplikasi Flutter atau kode.
+    """
+    supabase_url = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+    service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+
+    if not supabase_url or not service_key:
+        print(
+            "SUPABASE TIDAK DIKIRIM: SUPABASE_URL atau "
+            "SUPABASE_SERVICE_ROLE_KEY belum diatur."
+        )
+        return False
+
+    if not results:
+        print("SUPABASE TIDAK DIKIRIM: daftar TOP 10 kosong.")
+        return False
+
+    endpoint = f"{supabase_url}/rest/v1/top10_scans"
+    headers = {
+        "apikey": service_key,
+        "Authorization": f"Bearer {service_key}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal",
+    }
+
+    def clean_number(value):
+        try:
+            number = float(value)
+            return number if np.isfinite(number) else None
+        except (TypeError, ValueError):
+            return None
+
+    rows = []
+    for result in results[:TOP_N]:
+        fib_parts = []
+        for label, key in (
+            ("38.2%", "fib382"),
+            ("50%", "fib500"),
+            ("61.8%", "fib618"),
+        ):
+            value = clean_number(result.get(key))
+            if value is not None:
+                fib_parts.append(f"{label}: {value:.2f}")
+
+        entry1_low = clean_number(result.get("entry1_low", result.get("entry_low")))
+        entry1_high = clean_number(result.get("entry1_high", result.get("entry_high")))
+        entry1_mid = (
+            (entry1_low + entry1_high) / 2
+            if entry1_low is not None and entry1_high is not None
+            else None
+        )
+
+        row = {
+            "scan_date": scan_date,
+            "scan_time": datetime.now(ZoneInfo(TIMEZONE)).isoformat(),
+            "ticker": str(result.get("ticker", "")).upper(),
+            "price": clean_number(result.get("price")),
+            "score": clean_number(result.get("score")),
+            "signal": str(result.get("signal", "")),
+            "rsi": clean_number(result.get("rsi")),
+            "volume_ratio": clean_number(result.get("volume_ratio")),
+            "entry1": entry1_mid,
+            "entry2": (
+                (
+                    clean_number(result.get("entry2_low"))
+                    + clean_number(result.get("entry2_high"))
+                ) / 2
+                if clean_number(result.get("entry2_low")) is not None
+                and clean_number(result.get("entry2_high")) is not None
+                else None
+            ),
+            "support": clean_number(result.get("support20")),
+            "fibonacci": " | ".join(fib_parts) if fib_parts else None,
+            "stop_loss": clean_number(result.get("stop_loss")),
+            "target1": clean_number(result.get("target_1")),
+            "target2": clean_number(result.get("target_2")),
+            "risk_reward": clean_number(result.get("reward_risk")),
+            "momentum_score": clean_number(result.get("momentum_score")),
+            "accumulation_score": clean_number(result.get("accumulation_score")),
+            "raw_data": result,
+        }
+        if row["ticker"]:
+            rows.append(row)
+
+    if not rows:
+        print("SUPABASE TIDAK DIKIRIM: tidak ada ticker TOP 10 yang valid.")
+        return False
+
+    # Bersihkan hasil scan tanggal yang sama agar daftar tidak menyisakan
+    # saham TOP 10 dari pemindaian sebelumnya pada hari tersebut.
+    try:
+        delete_response = requests.delete(
+            endpoint,
+            headers=headers,
+            params={"scan_date": f"eq.{scan_date}"},
+            timeout=30,
+        )
+        if not delete_response.ok:
+            print(
+                "SUPABASE GAGAL membersihkan hasil tanggal yang sama: "
+                f"HTTP {delete_response.status_code} - "
+                f"{delete_response.text[:300]}"
+            )
+            return False
+
+        insert_headers = dict(headers)
+        insert_headers["Prefer"] = "return=minimal"
+        response = requests.post(
+            endpoint,
+            headers=insert_headers,
+            json=rows,
+            timeout=45,
+        )
+
+        if response.ok:
+            print(
+                f"SUPABASE BERHASIL: {len(rows)} saham TOP 10 "
+                f"tersimpan untuk {scan_date}."
+            )
+            return True
+
+        print(
+            f"SUPABASE GAGAL menyimpan TOP 10: HTTP {response.status_code} "
+            f"- {response.text[:500]}"
+        )
+
+    except requests.RequestException as exc:
+        print(f"SUPABASE GAGAL mengirim data: {exc}")
+
+    return False
+
+
 # ============================================================
 # PROSES UTAMA
 # ============================================================
@@ -1296,6 +1435,10 @@ def main():
             f"Mengirim TOP {len(top_ranked)} saham yang lolos filter likuiditas "
             "(ranking teknikal → momentum → akumulasi tetap)."
         )
+
+        # Simpan daftar TOP 10 yang sama dengan daftar laporan Telegram.
+        save_top10_to_supabase(top_ranked, today)
+
         telegram_messages = make_top10_telegram_messages(top_ranked)
         sent_count = 0
         for part_no, message in enumerate(telegram_messages, start=1):
