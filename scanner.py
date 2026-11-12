@@ -1225,6 +1225,7 @@ def save_top10_to_supabase(results, scan_date):
         if isinstance(value, (pd.Timestamp, datetime)):
             return value.isoformat()
 
+        # Tipe numerik lain (misalnya Decimal) ditangani tanpa meloloskan NaN.
         try:
             if pd.isna(value):
                 return None
@@ -1286,7 +1287,8 @@ def save_top10_to_supabase(results, scan_date):
             "risk_reward": clean_number(result.get("reward_risk")),
             "momentum_score": clean_number(result.get("momentum_score")),
             "accumulation_score": clean_number(result.get("accumulation_score")),
-            # Pastikan seluruh data mentah aman untuk JSON standar.\n            "raw_data": make_json_safe(result),
+            # raw_data juga harus dibersihkan; angka non-finite menjadi null.
+            "raw_data": make_json_safe(result),
         }
         if row["ticker"]:
             rows.append(row)
