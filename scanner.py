@@ -1188,11 +1188,56 @@ def save_top10_to_supabase(results, scan_date):
     }
 
     def clean_number(value):
+        """Ubah angka finite menjadi float; NaN/Infinity menjadi null Python."""
         try:
             number = float(value)
             return number if np.isfinite(number) else None
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return None
+
+    def make_json_safe(value):
+        """Bersihkan nilai secara rekursif agar kompatibel dengan JSON standar."""
+        if value is None or isinstance(value, (str, bool, int)):
+            return value
+
+        if isinstance(value, (float, np.floating)):
+            number = float(value)
+            return number if np.isfinite(number) else None
+
+        if isinstance(value, np.integer):
+            return int(value)
+
+        if isinstance(value, np.bool_):
+            return bool(value)
+
+        if isinstance(value, dict):
+            return {str(key): make_json_safe(item) for key, item in value.items()}
+
+        if isinstance(value, (list, tuple, set)):
+            return [make_json_safe(item) for item in value]
+
+        if isinstance(value, np.ndarray):
+            return make_json_safe(value.tolist())
+
+        if value is pd.NA or value is pd.NaT:
+            return None
+
+        if isinstance(value, (pd.Timestamp, datetime)):
+            return value.isoformat()
+
+        try:
+            if pd.isna(value):
+                return None
+        except (TypeError, ValueError):
+            pass
+
+        if hasattr(value, "item"):
+            try:
+                return make_json_safe(value.item())
+            except (TypeError, ValueError, AttributeError):
+                pass
+
+        return str(value)
 
     rows = []
     for result in results[:TOP_N]:
@@ -1241,7 +1286,7 @@ def save_top10_to_supabase(results, scan_date):
             "risk_reward": clean_number(result.get("reward_risk")),
             "momentum_score": clean_number(result.get("momentum_score")),
             "accumulation_score": clean_number(result.get("accumulation_score")),
-            "raw_data": result,
+            # Pastikan seluruh data mentah aman untuk JSON standar.\n            "raw_data": make_json_safe(result),
         }
         if row["ticker"]:
             rows.append(row)
@@ -1250,8 +1295,22 @@ def save_top10_to_supabase(results, scan_date):
         print("SUPABASE TIDAK DIKIRIM: tidak ada ticker TOP 10 yang valid.")
         return False
 
+    # Validasi seluruh payload SEBELUM menyentuh data lama di Supabase.
+    # allow_nan=False memastikan NaN/Infinity tidak lolos ke JSON.
+    try:
+        payload = json.dumps(
+            make_json_safe(rows),
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError, OverflowError) as exc:
+        print(f"SUPABASE DIBATALKAN: payload JSON belum valid: {exc}")
+        return False
+
     # Bersihkan hasil scan tanggal yang sama agar daftar tidak menyisakan
     # saham TOP 10 dari pemindaian sebelumnya pada hari tersebut.
+    # Penghapusan baru boleh dilakukan setelah payload lolos validasi JSON.
     try:
         delete_response = requests.delete(
             endpoint,
@@ -1272,7 +1331,7 @@ def save_top10_to_supabase(results, scan_date):
         response = requests.post(
             endpoint,
             headers=insert_headers,
-            json=rows,
+            data=payload.encode("utf-8"),
             timeout=45,
         )
 
