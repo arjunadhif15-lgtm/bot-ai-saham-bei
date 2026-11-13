@@ -2,7 +2,7 @@
 """Bandarmology TOP 10: IDX Edge PRO -> Supabase. Modul terpisah dari scanner.py."""
 import os
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
@@ -28,8 +28,10 @@ def call(session, method, url, headers, params=None, body=None, timeout=30):
     last = None
     for attempt in range(RETRIES):
         try:
-            r = session.request(method, url, headers=headers, params=params,
-                                json=body, timeout=timeout)
+            r = session.request(
+                method, url, headers=headers, params=params,
+                json=body, timeout=timeout
+            )
             if r.status_code in (429, 500, 502, 503, 504) and attempt < RETRIES - 1:
                 last = f"HTTP {r.status_code}: {r.text[:250]}"
                 continue
@@ -46,24 +48,40 @@ def main():
     supa = env("SUPABASE_URL").rstrip("/")
     service = env("SUPABASE_SERVICE_ROLE_KEY")
     idx_key = env("IDX_EDGE_API_KEY")
-    sh = {"apikey": service, "Authorization": f"Bearer {service}",
-          "Accept": "application/json", "Content-Type": "application/json"}
+
+    sh = {
+        "apikey": service,
+        "Authorization": f"Bearer {service}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
     ih = {"X-API-Key": idx_key, "Accept": "application/json"}
     session = requests.Session()
 
-    # Ambil maksimal 50 baris terbaru, lalu pilih 10 ticker unik dari tanggal terbaru.
-    latest = call(session, "GET", f"{supa}/rest/v1/top10_scans", sh,
-                  params={"select": "scan_date,scan_time,ticker",
-                          "order": "scan_date.desc,scan_time.desc", "limit": "50"})
+    # Ambil TOP 10 terbaru dari Supabase.
+    latest = call(
+        session, "GET", f"{supa}/rest/v1/top10_scans", sh,
+        params={
+            "select": "scan_date,scan_time,ticker",
+            "order": "scan_date.desc,scan_time.desc",
+            "limit": "50",
+        },
+    )
+
     if not isinstance(latest, list) or not latest:
-        raise RuntimeError("top10_scans kosong/tidak valid; tidak ada data yang diubah.")
+        raise RuntimeError(
+            "top10_scans kosong/tidak valid; tidak ada data yang diubah."
+        )
+
     scan_date = max(str(x.get("scan_date", "")) for x in latest)
     tickers = []
+
     for row in latest:
         if str(row.get("scan_date", "")) == scan_date:
-            t = str(row.get("ticker", "")).strip().upper()
-            if t and t not in tickers:
-                tickers.append(t)
+            ticker = str(row.get("ticker", "")).strip().upper()
+            if ticker and ticker not in tickers:
+                tickers.append(ticker)
+
     if len(tickers) != 10:
         raise RuntimeError(
             f"Tanggal {scan_date} hanya memiliki {len(tickers)} ticker unik, "
@@ -73,81 +91,156 @@ def main():
     end = date.fromisoformat(scan_date)
     start = end - timedelta(days=14)
     rows = []
+
     log(f"TOP 10 tanggal {scan_date}: {', '.join(tickers)}")
 
     for i, ticker in enumerate(tickers, 1):
         log(f"[{i}/10] Mengambil broker {ticker}")
+
         summary = call(
-            session, "GET", f"{IDX}/broker-summary/{ticker}", ih,
-            params={"net": "false", "broker_limit": 20, "level_limit": 25,
-                    "all_data": "false", "flow": "all"})
+            session,
+            "GET",
+            f"{IDX}/broker-summary/{ticker}",
+            ih,
+            params={
+                "net": "false",
+                "broker_limit": 20,
+                "level_limit": 25,
+                "all_data": "false",
+                "flow": "all",
+            },
+        )
+
         history = call(
-            session, "GET", f"{IDX}/broker-accumulation/{ticker}", ih,
-            params={"start_date": start.isoformat(), "end_date": end.isoformat()})
+            session,
+            "GET",
+            f"{IDX}/broker-accumulation/{ticker}",
+            ih,
+            params={
+                "start_date": start.isoformat(),
+                "end_date": end.isoformat(),
+            },
+        )
+
         if not isinstance(summary, dict) or not isinstance(history, dict):
             raise RuntimeError(f"{ticker}: format respons API tidak valid.")
 
         series = history.get("series")
-        if not isinstance(series, list):
-            raise RuntimeError(f"{ticker}: data series broker tidak ditemukan.")
 
-        dates = set()
-        totals = {}
+        if not isinstance(series, list):
+            raise RuntimeError(
+                f"{ticker}: data series broker tidak ditemukan."
+            )
+
+        # Ambil tepat lima tanggal perdagangan terbaru.
+        all_dates = set()
+
         for broker in series:
             if not isinstance(broker, dict):
                 continue
-            code = str(broker.get("broker_code", "")).strip()
-            if not code:
-                continue
-            total = 0.0
-            pos = neg = count = 0
-            for point in broker.get("points", []) or []:
-                if not isinstance(point, dict):
-                    continue
-                day = str(point.get("date", "")).strip()
-                if day:
-                    dates.add(day)
-                try:
-                    val = float(point.get("nval") or 0)
-                    if val != val or abs(val) == float("inf"):
-                        val = 0.0
-                except (TypeError, ValueError, OverflowError):
-                    val = 0.0
-                total += val
-                count += 1
-                pos += int(val > 0)
-                neg += int(val < 0)
-            totals[code] = {
-                "broker_code": code,
-                "broker_name": str(broker.get("broker_name") or code),
-                "total_nval": round(total, 2),
-                "positive_days": pos,
-                "negative_days": neg,
-                "observed_days": count,
-            }
 
-        if len(dates) < MIN_DAYS:
+            for point in broker.get("points", []) or []:
+                if isinstance(point, dict):
+                    day = str(point.get("date", "")).strip()
+                    if day:
+                        all_dates.add(day)
+
+        if len(all_dates) < MIN_DAYS:
             raise RuntimeError(
-                f"{ticker}: hanya {len(dates)} hari perdagangan tersedia "
+                f"{ticker}: hanya {len(all_dates)} hari perdagangan tersedia "
                 "(butuh minimal 5). Batch tidak disimpan."
             )
 
-        buyers = sorted((x for x in totals.values() if x["total_nval"] > 0),
-                        key=lambda x: x["total_nval"], reverse=True)
-        sellers = sorted((x for x in totals.values() if x["total_nval"] < 0),
-                         key=lambda x: x["total_nval"])
+        dates = sorted(all_dates)[-MIN_DAYS:]
+        selected_dates = set(dates)
+        totals = {}
+
+        for broker in series:
+            if not isinstance(broker, dict):
+                continue
+
+            code = str(broker.get("broker_code", "")).strip()
+            if not code:
+                continue
+
+            total = 0.0
+            positive = 0
+            negative = 0
+            count = 0
+
+            for point in broker.get("points", []) or []:
+                if not isinstance(point, dict):
+                    continue
+
+                day = str(point.get("date", "")).strip()
+                if day not in selected_dates:
+                    continue
+
+                try:
+                    value = float(point.get("nval") or 0)
+                    if value != value or abs(value) == float("inf"):
+                        value = 0.0
+                except (TypeError, ValueError, OverflowError):
+                    value = 0.0
+
+                total += value
+                count += 1
+                positive += int(value > 0)
+                negative += int(value < 0)
+
+            if count:
+                totals[code] = {
+                    "broker_code": code,
+                    "broker_name": str(
+                        broker.get("broker_name") or code
+                    ),
+                    "total_nval": round(total, 2),
+                    "positive_days": positive,
+                    "negative_days": negative,
+                    "observed_days": count,
+                }
+
+        buyers = sorted(
+            (x for x in totals.values() if x["total_nval"] > 0),
+            key=lambda x: x["total_nval"],
+            reverse=True,
+        )
+
+        sellers = sorted(
+            (x for x in totals.values() if x["total_nval"] < 0),
+            key=lambda x: x["total_nval"],
+        )
+
         buy_total = sum(x["total_nval"] for x in buyers)
         sell_total = abs(sum(x["total_nval"] for x in sellers))
         gross = buy_total + sell_total
-        balance = 50.0 if gross == 0 else 50.0 + 50.0 * (buy_total - sell_total) / gross
+
+        balance = (
+            50.0 if gross == 0 else
+            50.0 + 50.0 * (buy_total - sell_total) / gross
+        )
+
         consistencies = [
             x["positive_days"] / x["observed_days"]
-            for x in buyers[:5] if x["observed_days"] > 0
+            for x in buyers[:5]
+            if x["observed_days"] > 0
         ]
-        consistency = sum(consistencies) / len(consistencies) if consistencies else 0
-        score = round(max(0, min(100, 0.75 * balance + 25 * consistency)), 2)
-        signal = ("INDIKASI AKUMULASI" if score >= 65 else
-                  "INDIKASI DISTRIBUSI" if score <= 35 else "NETRAL / CAMPURAN")
+
+        consistency = (
+            sum(consistencies) / len(consistencies)
+            if consistencies else 0
+        )
+
+        score = round(
+            max(0, min(100, 0.75 * balance + 25 * consistency)),
+            2,
+        )
+
+        signal = (
+            "INDIKASI AKUMULASI" if score >= 65 else
+            "INDIKASI DISTRIBUSI" if score <= 35 else
+            "NETRAL / CAMPURAN"
+        )
 
         rows.append({
             "scan_date": scan_date,
@@ -164,22 +257,26 @@ def main():
                 "method": "heuristik_net_flow_dan_konsistensi_broker",
                 "balance_score": round(balance, 2),
                 "buyer_consistency": round(consistency, 4),
-                "trading_dates": sorted(dates),
+                "trading_dates": dates,
                 "trading_days_count": len(dates),
                 "note": (
-                    "Broker flow bukan identitas pemilik manfaat dan bukan bukti "
-                    "pasti aktivitas bandar atau rekomendasi beli/jual."
+                    "Broker flow bukan identitas pemilik manfaat dan bukan "
+                    "bukti pasti aktivitas bandar atau rekomendasi beli/jual."
                 ),
             },
         })
+
         log(f"{ticker}: {signal}, skor {score}/100, {len(dates)} sesi")
 
     if len(rows) != 10:
-        raise RuntimeError("Hasil tidak lengkap 10 saham; batch tidak disimpan.")
+        raise RuntimeError(
+            "Hasil tidak lengkap 10 saham; batch tidak disimpan."
+        )
 
-    # Upsert hanya setelah SEMUA 10 saham berhasil; kegagalan tidak menghapus data lama.
+    # Simpan hanya setelah seluruh 10 saham berhasil diproses.
     save_headers = dict(sh)
     save_headers["Prefer"] = "resolution=merge-duplicates,return=minimal"
+
     response = session.post(
         f"{supa}/rest/v1/bandarmology_scans",
         headers=save_headers,
@@ -187,7 +284,9 @@ def main():
         json=rows,
         timeout=45,
     )
+
     response.raise_for_status()
+
     log(f"BERHASIL: {len(rows)} saham tersimpan untuk {scan_date}.")
     return 0
 
