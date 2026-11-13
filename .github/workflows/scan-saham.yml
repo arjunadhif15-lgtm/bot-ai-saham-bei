@@ -50,6 +50,11 @@ jobs:
             exit 1
           }
 
+          test -f bandarmology.py || {
+            echo "ERROR: bandarmology.py tidak ditemukan!"
+            exit 1
+          }
+
           test -f app.py || {
             echo "ERROR: app.py tidak ditemukan!"
             exit 1
@@ -74,6 +79,13 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: python -u scanner.py
+
+      - name: Jalankan analisis Bandarmology TOP 10
+        env:
+          IDX_EDGE_API_KEY: ${{ secrets.IDX_EDGE_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python -u bandarmology.py
 
       - name: Simpan catatan notifikasi harian
         if: always()
